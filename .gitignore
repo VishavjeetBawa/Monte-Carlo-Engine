@@ -1,0 +1,26 @@
+# === C++ Build Artifacts ===
+*.o
+*.a
+*.out
+*.exe
+*.so
+*.dll
+*.lib
+
+# === CMake (The "Big Three" to keep root clean) ===
+build/                 # Standard out-of-source build directory
+CMakeCache.txt         # Prevents path conflicts between devs
+CMakeFiles/            # Internal CMake temp files
+
+# === Developer Tooling (Essential for Neovim) ===
+compile_commands.json  # Generated for clangd/LSP (contains local paths)
+.clang-format          # Keep this UNLESS you want to force a style
+.cache/                # Clangd indexer cache
+
+# === Neovim Temporary Files ===
+*.swp
+*.swo
+*~
+*.bak
+.netrwhist
+
