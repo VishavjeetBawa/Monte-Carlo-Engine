@@ -1,3 +1,7 @@
-This is my first readme for the montecarlo project
+To Build
 
-- Crude Monte carlo done.
+- git clone url/github.com
+- cd ..path_to_build/..
+- cmake ..
+- cmake --build .
+- ./test (to run the test)
