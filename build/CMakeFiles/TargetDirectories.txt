@@ -1,0 +1,4 @@
+/home/Vishavjeet/cse/urop/build/CMakeFiles/core.dir
+/home/Vishavjeet/cse/urop/build/CMakeFiles/test.dir
+/home/Vishavjeet/cse/urop/build/CMakeFiles/edit_cache.dir
+/home/Vishavjeet/cse/urop/build/CMakeFiles/rebuild_cache.dir

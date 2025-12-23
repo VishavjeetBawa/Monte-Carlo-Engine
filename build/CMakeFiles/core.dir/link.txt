@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcore.a CMakeFiles/core.dir/src/MCE.cpp.o CMakeFiles/core.dir/src/Payoff.cpp.o CMakeFiles/core.dir/src/RNG.cpp.o CMakeFiles/core.dir/src/RunStats.cpp.o CMakeFiles/core.dir/src/Timer.cpp.o CMakeFiles/core.dir/src/GAsianPricer.cpp.o
+/usr/bin/ranlib libcore.a
