@@ -24,3 +24,20 @@ compile_commands.json  # Generated for clangd/LSP (contains local paths)
 *.bak
 .netrwhist
 
+
+build/
+cmake-build-*/
+
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+#project specific
+Monte-Carlo-Engine/build/
+Monte-Carlo-Engine/cmake-build-*/
+
+.vscode/
+.DS_Store
+
+test
+
