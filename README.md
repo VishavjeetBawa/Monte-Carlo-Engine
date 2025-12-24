@@ -1,7 +1,16 @@
-To Build
+ ### Build and Run
 
-- git clone url/github.com
-- cd ..path_to_build/..
-- cmake ..
-- cmake --build .
-- ./test (to run the test)
+``` 
+git clone https://github.com/VishavjeetBawa/Monte-Carlo-Engine.git
+
+cd Monte-Carlo-Engine
+
+mkdir build
+cd build
+
+cmake ..
+cmake --build .
+
+./test
+```
+
