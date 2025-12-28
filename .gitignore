@@ -6,19 +6,19 @@
 *.so
 *.dll
 *.lib
-/build/
+
 
 # === CMake (The "Big Three" to keep root clean) ===
-/build/                 # Standard out-of-source build directory
-CMakeCache.txt         # Prevents path conflicts between devs
-CMakeFiles/            # Internal CMake temp files
+/build/               
+CMakeCache.txt       
+CMakeFiles/        
 
 /perf.data
 
 # === Developer Tooling (Essential for Neovim) ===
-compile_commands.json  # Generated for clangd/LSP (contains local paths)
-.clang-format          # Keep this UNLESS you want to force a style
-.cache/                # Clangd indexer cache
+compile_commands.json  
+.clang-format         
+.cache/           
 
 # === Neovim Temporary Files ===
 *.swp
