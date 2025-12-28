@@ -4,13 +4,12 @@
 
 namespace urop{
 
-std::vector<double> MtRand::generate_deviates(long long count , std::vector<double>& deviates) const{
+void MtRand::generate_deviates(long long count , std::vector<double>& deviates){
     deviates.resize(count);
-    std::generate(deviates.begin() , deviates.end() , [&gen = generator_ , &dist = distribution_](){
-        return dist(gen);
+    std::generate(deviates.begin() , deviates.end() , [&](){
+        return distribution_(generator_);
     });
 
-    return deviates;
 }
 
 }
