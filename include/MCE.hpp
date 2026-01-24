@@ -65,4 +65,36 @@ private:
     double calculate_path_payoff(const std::vector<double>& deviates , std::vector<double>& path_prices , Payoff& payoff)const;
 };
 
+//Quasi MCE
+class QOMCE {
+public:
+    QOMCE(const AOP params,
+          std::unique_ptr<Payoff> arith_payoff,
+          std::unique_ptr<Payoff> geo_payoff,
+          std::unique_ptr<AbstractRNG> rng,
+          double geo_exact,
+          long long batch_size)
+        : params_(params),
+          arith_payoff_(std::move(arith_payoff)),
+          geo_payoff_(std::move(geo_payoff)),
+          rng_(std::move(rng)),
+          geo_exact_(geo_exact),
+          batch_size_(batch_size) {}
+
+    MCResult run();
+
+private:
+    const AOP params_;
+    std::unique_ptr<Payoff> arith_payoff_;
+    std::unique_ptr<Payoff> geo_payoff_;
+    std::unique_ptr<AbstractRNG> rng_;
+    const double geo_exact_;
+    const long long batch_size_;
+
+    double calculate_path_payoff(const std::vector<double>& deviates,
+                                 std::vector<double>& path_prices,
+                                 Payoff& payoff) const;
+};
+
+
 };

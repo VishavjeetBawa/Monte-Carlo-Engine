@@ -14,8 +14,9 @@ target_include_directories(core PUBLIC include)
 add_executable(test1 tests/test_OMCE.cpp)
 add_executable(test2 tests/test_AVMCE.cpp)
 add_executable(test3 tests/test_CMCE.cpp)
+add_executable(test4 tests/test_QMCE.cpp)
 
 target_link_libraries(test1 PRIVATE core)
 target_link_libraries(test2 PRIVATE core)
 target_link_libraries(test3 PRIVATE core)
-
+target_link_libraries(test4 PRIVATE core)

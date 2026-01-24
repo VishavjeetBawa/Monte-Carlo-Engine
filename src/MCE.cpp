@@ -210,6 +210,124 @@ double OMCE::calculate_path_payoff(const std::vector<double>& deviates , std::ve
 
 }
 
+/*
+ *QUASI OPTIMISED MONTE-CARLO ENGINE:-
+ * 
+*/
+
+double QOMCE::calculate_path_payoff(const std::vector<double>& deviates,
+                                    std::vector<double>& path_prices,
+                                    Payoff& payoff) const
+{
+    const double dt = params_.dT_;
+    const double sigma = params_.sigma_;
+    const double r = params_.R_;
+
+    const double drift_term = (r - 0.5*sigma*sigma) * dt;
+    const double volatility_term = sigma * std::sqrt(dt);
+
+    double log_price = std::log(params_.S0_);
+
+    path_prices.clear();
+
+    for (const double Z : deviates) {
+        log_price += drift_term + volatility_term * Z;
+        path_prices.push_back(std::exp(log_price));
+    }
+
+    return payoff.calculate(path_prices);
+}
+
+MCResult QOMCE::run()
+{
+    RunStats stats;   // now over batches
+
+    const long long total_paths = params_.M_;
+    const long long time_steps  = params_.N_;
+    const double discount_factor = params_.dF_;
+
+    const long long Nbatches = total_paths / batch_size_;
+    const long long paths_per_batch = batch_size_ / 2; // because AV
+
+    std::vector<double> buffer;
+    buffer.reserve(time_steps);
+
+    std::vector<double> z_plus;
+    z_plus.reserve(time_steps);
+// QMC requires Sobol RNG
+    auto* sobol = dynamic_cast<Sobol*>(rng_.get());
+    if (!sobol)
+        throw std::runtime_error("QOMCE requires Sobol RNG");
+
+    // Reset Sobol sequence once
+    sobol->reset();
+
+
+    for (long long b = 0; b < Nbatches; ++b)
+    {
+      // New digital shift per batch
+        sobol->randomize_shift();
+      
+
+        // ================= PASS 1: estimate beta =================
+        BiRunStats cv;
+
+        for (long long i = 0; i < paths_per_batch; ++i)
+        {
+            rng_->generate_deviates(time_steps, z_plus);
+
+            double arith_a = calculate_path_payoff(z_plus, buffer, *arith_payoff_);
+            double geo_a   = calculate_path_payoff(z_plus, buffer, *geo_payoff_);
+
+            for (auto& z : z_plus) z = -z;
+
+            double arith_b = calculate_path_payoff(z_plus, buffer, *arith_payoff_);
+            double geo_b   = calculate_path_payoff(z_plus, buffer, *geo_payoff_);
+
+            double arith_avg = 0.5 * (arith_a + arith_b);
+            double geo_avg   = 0.5 * (geo_a   + geo_b);
+
+            cv.update(arith_avg, geo_avg);
+        }
+
+        const double beta = cv.beta();
+        const double geo_exact = geo_exact_;
+
+        // ================= PASS 2: corrected estimator =================
+        double batch_sum = 0.0;
+
+        for (long long i = 0; i < paths_per_batch; ++i)
+        {
+            rng_->generate_deviates(time_steps, z_plus);
+
+            double arith_a = calculate_path_payoff(z_plus, buffer, *arith_payoff_);
+            double geo_a   = calculate_path_payoff(z_plus, buffer, *geo_payoff_);
+
+            for (auto& z : z_plus) z = -z;
+
+            double arith_b = calculate_path_payoff(z_plus, buffer, *arith_payoff_);
+            double geo_b   = calculate_path_payoff(z_plus, buffer, *geo_payoff_);
+
+            double arith_avg = 0.5 * (arith_a + arith_b);
+            double geo_avg   = 0.5 * (geo_a   + geo_b);
+
+            double corrected =
+                arith_avg - beta * (geo_avg - geo_exact);
+
+            batch_sum += corrected;
+        }
+
+        double batch_mean = batch_sum / paths_per_batch;
+
+        // this is the key difference vs OMCE
+        stats.update(batch_mean);
+    }
+
+    return {
+        stats.get_mean() * discount_factor,
+        stats.get_std_error() * discount_factor
+    };
+}
 
 
 };
