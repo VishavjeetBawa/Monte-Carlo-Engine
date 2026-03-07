@@ -1,3 +1,4 @@
+//MCE.hpp
 #pragma once
 
 #include <memory>
@@ -90,6 +91,41 @@ private:
     std::unique_ptr<AbstractRNG> rng_;
     const double geo_exact_;
     const long long batch_size_;
+
+    double calculate_path_payoff(const std::vector<double>& deviates,
+                                 std::vector<double>& path_prices,
+                                 Payoff& payoff) const;
+};
+
+
+/*
+*
+* Concurrent QOMCE
+*
+*/
+
+class COQMCE {
+public:
+    COQMCE(const AOP& params,
+                std::unique_ptr<Payoff> arith_payoff,
+                std::unique_ptr<Payoff> geo_payoff,
+                std::unique_ptr<AbstractRNG> prototype_rng,
+                double geo_exact)
+    : params_(params),
+      arith_payoff_(std::move(arith_payoff)),
+      geo_payoff_(std::move(geo_payoff)),
+      prototype_rng_(std::move(prototype_rng)),
+      geo_exact_(geo_exact) {}
+
+
+    MCResult run();
+
+private:
+    const AOP params_;
+    std::unique_ptr<Payoff> arith_payoff_;
+    std::unique_ptr<Payoff> geo_payoff_;
+    std::unique_ptr<AbstractRNG> prototype_rng_;
+    const double geo_exact_;
 
     double calculate_path_payoff(const std::vector<double>& deviates,
                                  std::vector<double>& path_prices,

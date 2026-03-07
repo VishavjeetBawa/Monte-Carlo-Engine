@@ -11,6 +11,20 @@ void RunStats::update(double x){
     M2_ += del_1 * del_2;
 }
 
+void RunStats::merge(const RunStats& other)
+{
+    if (other.count_ == 0) return;
+    if (count_ == 0) { *this = other; return; }
+
+    double delta = other.mean_ - mean_;
+    long long new_count = count_ + other.count_;
+
+    mean_ += delta * other.count_ / new_count;
+    M2_   += other.M2_ + delta * delta * count_ * other.count_ / new_count;
+
+    count_ = new_count;
+}
+
 double RunStats::get_std_dev() const{
     if (count_ < 2){
         return 0.0;

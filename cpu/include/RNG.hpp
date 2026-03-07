@@ -1,7 +1,9 @@
 #pragma once
 
+
 //RNG.hpp
 
+#include <memory>
 #include "joe_kuo_sobol_data.hpp"
 
 #include <vector>
@@ -15,10 +17,18 @@ class AbstractRNG{
 public:
     virtual ~AbstractRNG() = default ;
     virtual void generate_deviates(long long count , std::vector<double>& deviates)  = 0 ;
+    virtual std::unique_ptr<AbstractRNG> clone() const = 0;
+
 };
 
 class MtRand final : public AbstractRNG{
 public:
+    
+    std::unique_ptr<AbstractRNG> clone() const override
+    {
+        return std::make_unique<MtRand>();
+    }
+
     MtRand():generator_(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count())){}
     void generate_deviates(long long count , std::vector<double>& deviates) override;
 
@@ -37,6 +47,11 @@ Following is the sobol implementation:-
 class Sobol final : public AbstractRNG {
 public:
     Sobol(uint32_t dimensions, double T);
+    
+    std::unique_ptr<AbstractRNG> clone() const override
+    {
+        return std::make_unique<Sobol>(dimensions_, T_);
+    }
 
     void generate_deviates(long long count, std::vector<double>& deviates) override;
 

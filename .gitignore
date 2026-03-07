@@ -1,44 +1,50 @@
-# === C++ Build Artifacts ===
+# =========================
+# Build directories
+# =========================
+build/
+cmake-build-*/
+
+# =========================
+# CMake generated files
+# =========================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# =========================
+# C++ build artifacts
+# =========================
 *.o
 *.a
-*.out
-*.exe
 *.so
 *.dll
-*.lib
+*.dylib
+*.exe
+*.out
 
+# =========================
+# Profiling / performance
+# =========================
+perf.data
 
-# === CMake (The "Big Three" to keep root clean) ===
-/build/               
-CMakeCache.txt       
-CMakeFiles/        
+# =========================
+# Editor / IDE files
+# =========================
+.vscode/
+.cache/
 
-/perf.data
-
-# === Developer Tooling (Essential for Neovim) ===
-compile_commands.json  
-.clang-format         
-.cache/           
-
-# === Neovim Temporary Files ===
+# =========================
+# Neovim / Vim temporary
+# =========================
 *.swp
 *.swo
 *~
 *.bak
 .netrwhist
 
-
-build/
-cmake-build-*/
-
-CMakeFiles/
-cmake_install.cmake
-Makefile
-
-#project specific
-Monte-Carlo-Engine/build/
-Monte-Carlo-Engine/cmake-build-*/
-
-.vscode/
+# =========================
+# OS files
+# =========================
 .DS_Store
-
