@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
-project(urop LANGUAGES CXX)
+
+project(urop LANGUAGES CXX CUDA)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -18,6 +19,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Auto detect GPU arch
+set(CMAKE_CUDA_ARCHITECTURES native)
+
 # ======================
 # Include directories
 # ======================
@@ -25,6 +32,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include_directories(
     core/include
     cpu/include
+    cuda/include
 )
 
 # ======================
@@ -54,6 +62,24 @@ target_include_directories(cpu_mc PUBLIC cpu/include)
 target_link_libraries(cpu_mc PUBLIC core)
 
 # ======================
+# CUDA Monte Carlo engine
+# ======================
+
+add_library(cuda_mc STATIC
+    cuda/src/CudaQOMCE.cu
+    cuda/src/kernels.cu
+    cuda/src/sobol_device.cu
+)
+
+set_target_properties(cuda_mc PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+target_include_directories(cuda_mc PUBLIC cuda/include)
+
+target_link_libraries(cuda_mc PUBLIC core cpu_mc)
+
+# ======================
 # Tests
 # ======================
 
@@ -62,9 +88,12 @@ add_executable(test_AVMCE tests/test_AVMCE.cpp)
 add_executable(test_CMCE tests/test_CMCE.cpp)
 add_executable(test_QMCE tests/test_QMCE.cpp)
 add_executable(test_coqmce tests/test_coqmce.cpp)
+add_executable(test_gpuqmce tests/test_gpuqmce.cpp)
 
 target_link_libraries(test_OMCE PRIVATE cpu_mc)
 target_link_libraries(test_AVMCE PRIVATE cpu_mc)
 target_link_libraries(test_CMCE PRIVATE cpu_mc)
 target_link_libraries(test_QMCE PRIVATE cpu_mc)
 target_link_libraries(test_coqmce PRIVATE cpu_mc)
+
+target_link_libraries(test_gpuqmce PRIVATE cuda_mc)
