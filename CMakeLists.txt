@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
+add_subdirectory(qt)
 project(urop LANGUAGES CXX CUDA)
-
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
