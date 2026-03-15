@@ -15,10 +15,12 @@ void asian_qmc_kernel(GPUParams,double*);
 CudaQOMCE::CudaQOMCE(const AOP& params)
     : gpu_params_(params)
 {
-    cudaMemcpyToSymbol(
-        SOBOL_DIR,
-        sobol_directions,
-        sizeof(unsigned int)*512*32);
+cudaMemcpyToSymbol(
+    SOBOL_DIR,
+    (const unsigned int*)sobol_data::kDirectionNumbers,
+    sizeof(unsigned int)*512*32
+);
+
 }
 
 MCResult CudaQOMCE::run()
