@@ -35,3 +35,5 @@ private:
 
     QPushButton* runButton;
 };
+
+#include "main.moc"
