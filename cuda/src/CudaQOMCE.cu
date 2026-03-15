@@ -3,17 +3,14 @@
 #include "RunStats.hpp"
 
 #include <cuda_runtime.h>
-
 #include <vector>
 
 extern __constant__ unsigned int SOBOL_DIR[512][32];
 
-__global__
-void asian_qmc_kernel(
-        urop::GPUParams,
-        double*);
-
 namespace urop {
+
+__global__
+void asian_qmc_kernel(GPUParams,double*);
 
 CudaQOMCE::CudaQOMCE(const AOP& params)
     : gpu_params_(params)
@@ -21,8 +18,7 @@ CudaQOMCE::CudaQOMCE(const AOP& params)
     cudaMemcpyToSymbol(
         SOBOL_DIR,
         sobol_directions,
-        sizeof(unsigned int) * 512 * 32
-    );
+        sizeof(unsigned int)*512*32);
 }
 
 MCResult CudaQOMCE::run()
@@ -32,41 +28,37 @@ MCResult CudaQOMCE::run()
 
     double* d_results;
 
-    cudaMalloc(&d_results, sizeof(double) * M);
+    cudaMalloc(&d_results,sizeof(double)*M);
 
     int threads = 256;
+    int blocks = (M+threads-1)/threads;
 
-    int blocks =
-        (M + threads - 1) / threads;
-
-    asian_qmc_kernel<<<blocks, threads>>>(
+    asian_qmc_kernel<<<blocks,threads>>>(
         gpu_params_,
-        d_results
-    );
+        d_results);
 
-    std::vector<double> h_results(M);
+    std::vector<double> h(M);
 
     cudaMemcpy(
-        h_results.data(),
+        h.data(),
         d_results,
-        sizeof(double) * M,
-        cudaMemcpyDeviceToHost
-    );
+        sizeof(double)*M,
+        cudaMemcpyDeviceToHost);
 
     cudaFree(d_results);
 
     RunStats stats;
 
-    for(double x : h_results)
+    for(double x:h)
         stats.update(x);
 
     MCResult result;
 
     result.price =
-        stats.get_mean() * gpu_params_.discount;
+        stats.get_mean()*gpu_params_.discount;
 
-    result.stderr =
-        stats.get_std_error() * gpu_params_.discount;
+    result.std_error =
+        stats.get_std_error()*gpu_params_.discount;
 
     return result;
 }

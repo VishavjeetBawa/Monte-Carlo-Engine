@@ -69,6 +69,8 @@ add_library(cuda_mc STATIC
     cuda/src/CudaQOMCE.cu
     cuda/src/kernels.cu
     cuda/src/sobol_device.cu
+    cuda/src/invnorm_device.cu
+    cude/src/brownian_bridge.cu
 )
 
 set_target_properties(cuda_mc PROPERTIES

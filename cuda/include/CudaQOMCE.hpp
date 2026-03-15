@@ -1,7 +1,6 @@
 #pragma once
 
 #include "GPUParams.hpp"
-#include "OptionParams.hpp"
 #include "MCE.hpp"
 
 namespace urop {
