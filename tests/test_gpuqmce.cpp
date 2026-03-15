@@ -1,49 +1,42 @@
-#include "MonteCarlo.hpp"
+#include "OptionParams.hpp"
+#include "CudaQOMCE.hpp"
+#include "Timer.hpp"
 #include <iomanip>
+#include <iostream>
 
 int main()
 {
-    // Parameters (same as OMCE)
+    // Parameters (Standard Asian Option Test Case)
     urop::AOP params(100.0,   // S0
                      100.0,   // K
                      1.0,     // T
                      0.05,    // r
                      0.2,     // sigma
-                     100,     // N  (time steps)
-                     100000); // M  (total paths)
+                     100,     // N (time steps)
+                     100000); // M (total paths)
 
-    // Payoffs
-    auto geo_payoff   = std::make_unique<urop::GeometricAsianPayoff>(params.K_);
-    auto arith_payoff = std::make_unique<urop::AsianCallPayoff>(params.K_);
-
-    // Sobol RNG prototype (important: this is cloned per thread internally)
-    auto rng = std::make_unique<urop::Sobol>(params.N_, params.T_);
-
-    // Exact geometric price for control variate
-    urop::geo_pricer geo_exact(params);
-    double known = geo_exact.price();
-
-    // Concurrent engine (no batching needed here — threads are the batching)
-    urop::COQMCE engine(params,
-                        std::move(arith_payoff),
-                        std::move(geo_payoff),
-                        std::move(rng),
-                        known);
+    // Initialise the GPU Engine
+    // Note: Your CudaQOMCE handles its own Sobol sequences and 
+    // Arithmetic Average payoff logic within the CUDA kernel.
+    urop::CudaQOMCE engine(params);
 
     urop::Timer timer;
 
+    // Run the GPU Simulation
     timer.start();
     urop::MCResult result = engine.run();
     timer.stop();
 
+    // Output Results in your specific format
     std::cout << "COQMCE Price: " << std::fixed << std::setprecision(6)
               << result.price << "\n";
     std::cout << "Std Error: " << result.std_error << "\n";
 
-    timer.print_report("Concurrent QMC (Sobol + BB + Shift + AV + CV + Threads)",
+    // Benchmark Report
+    // Label updated to reflect GPU execution
+    timer.print_report("Concurrent QMC (Sobol + BB + Shift + AV + CV + GPU)",
                        params.M_);
 
     return 0;
 }
-
 

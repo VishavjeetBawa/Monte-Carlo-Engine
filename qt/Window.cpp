@@ -14,7 +14,7 @@
 
 using namespace urop;
 
-urop::Window::Window(QWidget *parent)
+Ui::Window::Window(QWidget *parent)
     : QWidget(parent)
 {
     auto *layout = new QVBoxLayout(this);
@@ -75,7 +75,7 @@ urop::Window::Window(QWidget *parent)
             this,&Window::runEngine);
 }
 
-void urop::Window::runEngine()
+void Ui::Window::runEngine()
 {
     double S0 = s0Box->text().toDouble();
     double K = kBox->text().toDouble();
