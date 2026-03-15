@@ -95,5 +95,10 @@ target_link_libraries(test_AVMCE PRIVATE cpu_mc)
 target_link_libraries(test_CMCE PRIVATE cpu_mc)
 target_link_libraries(test_QMCE PRIVATE cpu_mc)
 target_link_libraries(test_coqmce PRIVATE cpu_mc)
-
 target_link_libraries(test_gpuqmce PRIVATE cuda_mc)
+
+# ======================
+# QT GUI
+# ======================
+
+add_subdirectory(qt)
