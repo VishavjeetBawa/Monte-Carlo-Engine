@@ -6,34 +6,20 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Flags for deep profiling
 set(COMMON_PERF_FLAGS "-g -fno-omit-frame-pointer -march=native")
 
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 ${COMMON_PERF_FLAGS}")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 ${COMMON_PERF_FLAGS}")
 
-# Maximum vectorization
 add_compile_options(-ffast-math -ftree-vectorize)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Auto detect GPU arch
 set(CMAKE_CUDA_ARCHITECTURES native)
-
-# ======================
-# Include directories
-# ======================
-
-include_directories(
-    core/include
-    cpu/include
-    cuda/include
-)
 
 # ======================
 # Core library
@@ -70,7 +56,7 @@ add_library(cuda_mc STATIC
     cuda/src/kernels.cu
     cuda/src/sobol_device.cu
     cuda/src/invnorm_device.cu
-    cude/src/brownian_bridge.cu
+    cuda/src/brownian_bridge.cu
 )
 
 set_target_properties(cuda_mc PROPERTIES
@@ -80,6 +66,12 @@ set_target_properties(cuda_mc PROPERTIES
 target_include_directories(cuda_mc PUBLIC cuda/include)
 
 target_link_libraries(cuda_mc PUBLIC core cpu_mc)
+
+# ======================
+# QT GUI
+# ======================
+
+add_subdirectory(qt)
 
 # ======================
 # Tests
@@ -98,9 +90,3 @@ target_link_libraries(test_CMCE PRIVATE cpu_mc)
 target_link_libraries(test_QMCE PRIVATE cpu_mc)
 target_link_libraries(test_coqmce PRIVATE cpu_mc)
 target_link_libraries(test_gpuqmce PRIVATE cuda_mc)
-
-# ======================
-# QT GUI
-# ======================
-
-add_subdirectory(qt)
