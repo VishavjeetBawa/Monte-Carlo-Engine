@@ -14,7 +14,7 @@
 
 using namespace urop;
 
-Window::Window(QWidget *parent)
+urop::Window::Window(QWidget *parent)
     : QWidget(parent)
 {
     auto *layout = new QVBoxLayout(this);
@@ -75,7 +75,7 @@ Window::Window(QWidget *parent)
             this,&Window::runEngine);
 }
 
-void Window::runEngine()
+void urop::Window::runEngine()
 {
     double S0 = s0Box->text().toDouble();
     double K = kBox->text().toDouble();
@@ -104,9 +104,9 @@ void Window::runEngine()
         result = engine.run();
     }
 
-    double elapsed = timer.stop();
+    double elapsed = timer.elapsed();
 
     priceLabel->setText("Price: " + QString::number(result.price));
-    stderrLabel->setText("StdErr: " + QString::number(result.stderr));
+    stderrLabel->setText("StdErr: " + QString::number(result.std_err));
     timeLabel->setText("Time: " + QString::number(elapsed));
 }
