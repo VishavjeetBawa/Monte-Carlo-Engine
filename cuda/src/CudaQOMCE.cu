@@ -105,7 +105,12 @@ MCResult CudaQOMCE::run()
     for(long long i=0;i<M;i++)
         cv.update(h_arith[i],h_geo[i]);
 
+    
+//BUG FIX
     double beta = cv.beta();
+
+    if(std::isnan(beta) || std::isinf(beta))
+        beta = 0.0;
 
     double geo_exact =
         analytic_geometric_asian(gpu_params_);
