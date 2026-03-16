@@ -38,7 +38,7 @@ __device__ double inverse_normal(double u) {
 
 __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = 0.0;
-    w[N - 1] = sqrt(N * dt) * z[0];
+    w[N - 1] = sqrt(static_cast<double>(N) * dt) * z[0];
     int left[128], right[128]; 
     int top = 0, dim = 1;
     left[top] = 0; right[top] = N - 1;
@@ -67,8 +67,9 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    double z[512];
-    double w[512];
+    // Use a fixed size to avoid stack overflow. Ensure params.N <= 128
+    double z[128];
+    double w[128];
 
     // 1. Sobol Generation
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
@@ -77,7 +78,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
         for (int b = 0; b < 31; b++) {
             if (g & (1u << b)) x ^= d_SOBOL_DIR[i][b];
         }
-        double u = ((double)x + 0.5) * 2.3283064365386963e-10;
+        double u = (static_cast<double>(x) + 0.5) * 2.3283064365386963e-10;
         u = fmax(1e-10, fmin(u, 1.0 - 1e-10)); 
         z[i] = inverse_normal(u);
     }
@@ -129,7 +130,7 @@ MCResult CudaQOMCE::run() {
     cudaMemset(d_geo, 0, sizeof(double) * M);
 
     int threads = 128; 
-    int blocks = (int)((M + threads - 1) / threads);
+    int blocks = static_cast<int>((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo);
     cudaDeviceSynchronize();
@@ -139,21 +140,24 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaFree(d_arith); cudaFree(d_geo);
 
-    // --- DIAGNOSTICS ---
-    printf("\n[GPU Diagnostic] S0:%.2f K:%.2f N:%d M:%lld\n", gpu_params_.S0, gpu_params_.K, gpu_params_.N, gpu_params_.M);
-    printf("[GPU Diagnostic] Path[0]: Arith=%.4f, Geo=%.4f\n", h_arith[0], h_geo[0]);
-    printf("[GPU Diagnostic] Path[1]: Arith=%.4f, Geo=%.4f\n", h_arith[1], h_geo[1]);
-
+    // Reduction
     BiRunStats cv;
     long long valid_count = 0;
+    double sum_y_sq = 0.0; // Manual check for variance
+
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
+            sum_y_sq += h_geo[i] * h_geo[i];
             valid_count++;
         }
     }
 
-    double beta = (valid_count > 1) ? cv.beta() : 0.0;
+    // CRITICAL: If every path resulted in 0.0 (sum_y_sq == 0), beta must be 0
+    double beta = 0.0;
+    if (valid_count > 1 && sum_y_sq > 1e-12) {
+        beta = cv.beta();
+    }
     if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
@@ -166,7 +170,10 @@ MCResult CudaQOMCE::run() {
         if (std::isfinite(corrected)) stats.update(corrected);
     }
 
-    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
+    MCResult res;
+    res.price = stats.get_mean() * gpu_params_.discount;
+    res.std_error = stats.get_std_error() * gpu_params_.discount;
+    return res;
 }
 
 } // namespace urop
