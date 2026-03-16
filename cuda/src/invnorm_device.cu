@@ -1,50 +1,53 @@
 #include <math.h>
 
 __device__
-double inverse_normal(double p)
+double inverse_normal(double u)
 {
-    const double a1=-39.69683028665376;
-    const double a2=220.9460984245205;
-    const double a3=-275.9285104469687;
-    const double a4=138.3577518672690;
-    const double a5=-30.66479806614716;
-    const double a6=2.506628277459239;
+    const double a1 = -39.6968302866538;
+    const double a2 = 220.946098424521;
+    const double a3 = -275.928510446969;
+    const double a4 = 138.357751867269;
+    const double a5 = -30.6647980661472;
+    const double a6 = 2.50662827745924;
 
-    const double b1=-54.47609879822406;
-    const double b2=161.5858368580409;
-    const double b3=-155.6989798598866;
-    const double b4=66.80131188771972;
-    const double b5=-13.28068155288572;
+    const double b1 = -54.4760987982241;
+    const double b2 = 161.585836858041;
+    const double b3 = -155.698979859887;
+    const double b4 = 66.8013118877197;
+    const double b5 = -13.2806815528857;
 
-    const double c1=-0.007784894002430293;
-    const double c2=-0.3223964580411365;
-    const double c3=-2.400758277161838;
-    const double c4=-2.549732539343734;
-    const double c5=4.374664141464968;
-    const double c6=2.938163982698783;
+    const double c1 = -0.00778489400243029;
+    const double c2 = -0.322396458041136;
+    const double c3 = -2.40075827716184;
+    const double c4 = -2.54973253934373;
+    const double c5 = 4.37466414146497;
+    const double c6 = 2.93816398269878;
 
-    const double d1=0.007784695709041462;
-    const double d2=0.3224671290700398;
-    const double d3=2.445134137142996;
-    const double d4=3.754408661907416;
+    const double d1 = 0.00778469570904146;
+    const double d2 = 0.32246712907004;
+    const double d3 = 2.445134137143;
+    const double d4 = 3.75440866190742;
 
-    double q,r;
+    const double plow = 0.02425;
+    const double phigh = 1 - plow;
 
-    if(p < 0.02425)
+    double q, r;
+
+    if (u < plow)
     {
-        q = sqrt(-2*log(p));
+        q = sqrt(-2 * log(u));
         return (((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
                ((((d1*q+d2)*q+d3)*q+d4)*q+1);
     }
 
-    if(p > 1-0.02425)
+    if (u > phigh)
     {
-        q = sqrt(-2*log(1-p));
+        q = sqrt(-2 * log(1-u));
         return -(((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
-                 ((((d1*q+d2)*q+d3)*q+d4)*q+1);
+                ((((d1*q+d2)*q+d3)*q+d4)*q+1);
     }
 
-    q = p-0.5;
+    q = u - 0.5;
     r = q*q;
 
     return (((((a1*r+a2)*r+a3)*r+a4)*r+a5)*r+a6)*q /
