@@ -117,9 +117,10 @@ MCResult CudaQOMCE::run()
 
     for(long long i=0;i<M;i++)
     {
-        double corrected =
-            h_arith[i]
-            - beta*(h_geo[i]-geo_exact);
+        double corrected =  h_arith[i] - beta*(h_geo[i]-geo_exact);
+
+        if(std::isnan(corrected) || std::isinf(corrected))
+            corrected = h_arith[i];
 
         stats.update(corrected);
     }
