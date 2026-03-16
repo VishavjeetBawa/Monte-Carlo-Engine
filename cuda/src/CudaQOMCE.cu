@@ -11,6 +11,7 @@ __constant__ unsigned int SOBOL_DIR_INTERNAL[512][31];
 
 namespace urop {
 
+    __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo);
 // --- Device Functions ---
 
 __device__ double inverse_normal(double u) {
