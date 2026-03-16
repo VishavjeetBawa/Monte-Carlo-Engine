@@ -7,12 +7,10 @@
 #include <cstdio>
 #include <algorithm>
 
-// Define constant memory once in this translation unit
+// Define constant memory using UNSIGNED ints to match bitwise logic
 __constant__ unsigned int d_SOBOL_DIR[512][31];
 
 namespace urop {
-
-// --- Device Utilities ---
 
 __device__ double inverse_normal(double u) {
     const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
@@ -38,7 +36,7 @@ __device__ double inverse_normal(double u) {
 
 __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = 0.0;
-    w[N - 1] = sqrt(static_cast<double>(N) * dt) * z[0];
+    w[N - 1] = sqrt((double)N * dt) * z[0];
     int left[128], right[128]; 
     int top = 0, dim = 1;
     left[top] = 0; right[top] = N - 1;
@@ -61,31 +59,29 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = sqrt(dt) * z[N - 1];
 }
 
-// --- Kernel ---
-
 __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    // Use a fixed size to avoid stack overflow. Ensure params.N <= 128
-    double z[128];
-    double w[128];
+    // Use thread-local arrays for N=100. 
+    double z[100]; 
+    double w[100];
 
     // 1. Sobol Generation
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
+            // Note: d_SOBOL_DIR must be unsigned to avoid sign extension issues
             if (g & (1u << b)) x ^= d_SOBOL_DIR[i][b];
         }
-        double u = (static_cast<double>(x) + 0.5) * 2.3283064365386963e-10;
+        double u = ((double)x + 0.5) * 2.3283064365386963e-10;
         u = fmax(1e-10, fmin(u, 1.0 - 1e-10)); 
         z[i] = inverse_normal(u);
     }
 
     brownian_bridge(z, w, params.N, params.dt);
 
-    // 2. Pricing Logic
     double logS = log(params.S0);
     double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
     double sum_arith = 0.0, sum_geo = 0.0;
@@ -101,9 +97,8 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     geo[path] = fmax(exp(sum_geo / params.N) - params.K, 0.0);
 }
 
-// --- Host ---
-
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
+    // Explicit cast to unsigned int* to ensure the compiler doesn't sign-extend
     cudaMemcpyToSymbol(d_SOBOL_DIR, sobol_data::kDirectionNumbers, sizeof(unsigned int) * 512 * 31);
 }
 
@@ -120,17 +115,15 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 }
 
 MCResult CudaQOMCE::run() {
-    cudaDeviceSetLimit(cudaLimitStackSize, 24576); 
+    cudaDeviceSetLimit(cudaLimitStackSize, 32768); // Increased to 32KB
 
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
     cudaMalloc(&d_arith, sizeof(double) * M);
     cudaMalloc(&d_geo, sizeof(double) * M);
-    cudaMemset(d_arith, 0, sizeof(double) * M);
-    cudaMemset(d_geo, 0, sizeof(double) * M);
 
-    int threads = 128; 
-    int blocks = static_cast<int>((M + threads - 1) / threads);
+    int threads = 64; // Reduced block size to allow more registers/stack per thread
+    int blocks = (int)((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo);
     cudaDeviceSynchronize();
@@ -140,24 +133,18 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaFree(d_arith); cudaFree(d_geo);
 
-    // Reduction
     BiRunStats cv;
-    long long valid_count = 0;
-    double sum_y_sq = 0.0; // Manual check for variance
-
+    long long valid = 0;
+    double var_check = 0.0;
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
-            sum_y_sq += h_geo[i] * h_geo[i];
-            valid_count++;
+            var_check += h_geo[i] * h_geo[i];
+            valid++;
         }
     }
 
-    // CRITICAL: If every path resulted in 0.0 (sum_y_sq == 0), beta must be 0
-    double beta = 0.0;
-    if (valid_count > 1 && sum_y_sq > 1e-12) {
-        beta = cv.beta();
-    }
+    double beta = (valid > 1 && var_check > 1e-10) ? cv.beta() : 0.0;
     if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
@@ -170,10 +157,7 @@ MCResult CudaQOMCE::run() {
         if (std::isfinite(corrected)) stats.update(corrected);
     }
 
-    MCResult res;
-    res.price = stats.get_mean() * gpu_params_.discount;
-    res.std_error = stats.get_std_error() * gpu_params_.discount;
-    return res;
+    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
 }
 
 } // namespace urop
