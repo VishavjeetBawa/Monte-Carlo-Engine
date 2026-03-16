@@ -9,9 +9,10 @@
 
 namespace urop {
 
-static unsigned int* d_debug_sobol_ptr = nullptr;
+// Global pointer for Sobol directions
+static unsigned int* d_sobol_ptr = nullptr;
 
-// --- Math Utilities ---
+// --- Math Utilities (Order is critical for CUDA compiler) ---
 
 __device__ double inverse_normal(double u) {
     const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
@@ -51,29 +52,31 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
         double mean = ((t_r - t_m) * w[l] + (t_m - t_l) * w[r]) / (t_r - t_l);
         double var = fmax((t_m - t_l) * (t_r - t_m) / (t_r - t_l), 1e-14);
         w[m] = mean + sqrt(var) * z[dim++];
-        if (top + 1 < 128) { // Guard stack
+        if (top + 1 < 128) {
             top++; left[top] = l; right[top] = m;
             top++; left[top] = m; right[top] = r;
         }
     }
+    // Convert to increments
     for (int i = N - 1; i > 0; i--) w[i] = w[i] - w[i - 1];
     w[0] = sqrt(dt) * z[N - 1];
 }
 
-// --- Debug Kernel ---
+// --- Kernel ---
 
-__global__ void asian_qmc_debug_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
+__global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
     double z[128], w[128];
 
-    // 1. Sobol + Inverse Normal
+    // 1. Sobol Generation
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
-            if (g & (1u << b)) x ^= sobol_dirs[i * 31 + b];
+            // Indexing fix: We use 31 as the stride to match kMaxSobolDigits
+            x ^= (g & (1u << b)) ? sobol_dirs[i * 31 + b] : 0;
         }
         double u = ((double)x + 0.5) * 2.3283064365386963e-10;
         z[i] = inverse_normal(fmax(1e-10, fmin(u, 1.0 - 1e-10)));
@@ -84,44 +87,42 @@ __global__ void asian_qmc_debug_kernel(GPUParams params, double* arith, double* 
     // 2. Pricing
     double logS = log(params.S0);
     double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
+    double vol_adj = params.sigma;
     double sum_arith = 0.0, sum_geo = 0.0;
 
     for (int i = 0; i < params.N; i++) {
-        logS += drift + params.sigma * w[i];
-        double S = exp(fmin(logS, 50.0)); // Overflow guard
+        logS += drift + vol_adj * w[i];
+        double S = exp(fmin(logS, 50.0)); 
         sum_arith += S;
         sum_geo += logS;
     }
 
     arith[path] = fmax((sum_arith / params.N) - params.K, 0.0);
     geo[path] = fmax(exp(sum_geo / params.N) - params.K, 0.0);
-
-    // CRITICAL DEBUG: Print path 0 to see what's happening
-    if (path == 0) {
-        printf("[GPU Thread 0] Arith: %f, Geo: %f, Params.N: %d, S0: %f\n", arith[0], geo[0], params.N, params.S0);
-    }
 }
 
-// --- Host Code ---
+// --- Host ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
+    // Correct size calculation: 512 dimensions, each with 31 digits
     size_t sz = sizeof(unsigned int) * 512 * 31;
-    if (d_debug_sobol_ptr == nullptr) {
-        cudaMalloc(&d_debug_sobol_ptr, sz);
-        cudaMemcpy(d_debug_sobol_ptr, sobol_data::kDirectionNumbers, sz, cudaMemcpyHostToDevice);
+    if (d_sobol_ptr == nullptr) {
+        cudaMalloc(&d_sobol_ptr, sz);
+        // Explicitly copy from the first 512 rows of the Sobol data
+        cudaMemcpy(d_sobol_ptr, sobol_data::kDirectionNumbers, sz, cudaMemcpyHostToDevice);
     }
 }
 
-double normal_cdf(double x) { return 0.5 * erfc(-x / std::sqrt(2.0)); }
+double normal_cdf(double x) { return 0.5 * erfc(-x * 0.70710678118); }
 
 double analytic_geometric_asian(const urop::GPUParams& p) {
     double T = p.N * p.dt;
+    double sigma_sq = p.sigma * p.sigma;
     double sigma_hat = p.sigma * std::sqrt((p.N + 1.0) * (2.0 * p.N + 1.0) / (6.0 * p.N * p.N));
-    double mu_hat = (p.r - 0.5 * p.sigma * p.sigma) * (p.N + 1.0) / (2.0 * p.N) + 0.5 * sigma_hat * sigma_hat;
+    double mu_hat = (p.r - 0.5 * sigma_sq) * (p.N + 1.0) / (2.0 * p.N) + 0.5 * sigma_hat * sigma_hat;
     double d1 = (std::log(p.S0 / p.K) + (mu_hat + 0.5 * sigma_hat * sigma_hat) * T) / (sigma_hat * std::sqrt(T));
     double d2 = d1 - sigma_hat * std::sqrt(T);
-    double price = std::exp(-p.r * T) * (p.S0 * std::exp(mu_hat * T) * normal_cdf(d1) - p.K * normal_cdf(d2));
-    return std::isfinite(price) ? price : 0.0;
+    return std::exp(-p.r * T) * (p.S0 * std::exp(mu_hat * T) * normal_cdf(d1) - p.K * normal_cdf(d2));
 }
 
 MCResult CudaQOMCE::run() {
@@ -135,28 +136,28 @@ MCResult CudaQOMCE::run() {
     int threads = 64; 
     int blocks = (int)((M + threads - 1) / threads);
 
-    asian_qmc_debug_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_debug_sobol_ptr);
+    asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_sobol_ptr);
     cudaDeviceSynchronize();
 
     std::vector<double> h_arith(M), h_geo(M);
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
-    // Reduction with Beta guard
     BiRunStats cv;
     long long valid = 0;
-    double var_y_check = 0.0;
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
-            var_y_check += h_geo[i] * h_geo[i]; // Heuristic variance check
             valid++;
         }
     }
 
-    // Force beta to 0 if we have no statistical variance or valid paths
-    double beta = (valid > 1 && var_y_check > 1e-12) ? cv.beta() : 0.0;
-    if (!std::isfinite(beta)) beta = 0.0;
+    // Protection against Zero-Variance / NaN
+    double beta = 0.0;
+    if (valid > 10) {
+        beta = cv.beta();
+        if (!std::isfinite(beta)) beta = 0.0;
+    }
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
     RunStats stats;
