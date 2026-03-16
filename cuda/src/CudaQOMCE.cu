@@ -6,12 +6,11 @@
 #include <cmath>
 #include <cstdio>
 
-// Use a direct definition instead of extern if it's in this file
-__constant__ unsigned int SOBOL_DIR_INTERNAL[512][31];
+// Single definition of constant memory in this translation unit
+__constant__ unsigned int d_SOBOL_DIR[512][31];
 
 namespace urop {
 
-    __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo);
 // --- Device Functions ---
 
 __device__ double inverse_normal(double u) {
@@ -39,7 +38,7 @@ __device__ double inverse_normal(double u) {
 __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = 0.0;
     w[N-1] = sqrt(N * dt) * z[0];
-    int left[64], right[64]; 
+    int left[512], right[512]; 
     int top = 0, dim = 1;
     left[top] = 0; right[top] = N-1;
 
@@ -52,12 +51,11 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
         double mean = ((t_r - t_m) * w[l] + (t_m - t_l) * w[r]) / (t_r - t_l);
         double var = fmax((t_m - t_l) * (t_r - t_m) / (t_r - t_l), 0.0);
         w[m] = mean + sqrt(var) * z[dim++];
-        if(top + 2 < 64) {
-            top++; left[top] = m; right[top] = r;
+        if(top + 2 < 512) {
             top++; left[top] = l; right[top] = m;
+            top++; left[top] = m; right[top] = r;
         }
     }
-    // Convert bridge to increments for the Euler-like sum in kernel
     for(int i = N-1; i > 0; i--) w[i] = w[i] - w[i-1];
     w[0] = sqrt(dt) * z[N-1]; 
 }
@@ -68,8 +66,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    // LOCAL ARRAYS: Uses thread stack. 
-    // 512 * 8 bytes * 2 = 8KB. 
+    // Use a fixed size to avoid dynamic allocation on stack
     double z[512]; 
     double w[512];
 
@@ -77,10 +74,11 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
-            if (g & (1u << b)) x ^= SOBOL_DIR_INTERNAL[i][b];
+            if (g & (1u << b)) x ^= d_SOBOL_DIR[i][b];
         }
         double u = ((double)x + 0.5) * 2.3283064365386963e-10;
-        z[i] = inverse_normal(fmax(1e-12, fmin(u, 1.0 - 1e-12)));
+        u = fmax(u, 1e-12); u = fmin(u, 1.0 - 1e-12); // Clamping
+        z[i] = inverse_normal(u);
     }
 
     brownian_bridge(z, w, params.N, params.dt);
@@ -103,13 +101,8 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
 // --- Host Methods ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
-    // Correct symbol name copy
-    cudaError_t err = cudaMemcpyToSymbol(
-        SOBOL_DIR_INTERNAL, 
-        (const unsigned int*)sobol_data::kDirectionNumbers, 
-        sizeof(unsigned int) * 512 * 31
-    );
-    if(err != cudaSuccess) printf("MemcpyToSymbol Error: %s\n", cudaGetErrorString(err));
+    // Correctly copy to the symbol defined in this file
+    cudaMemcpyToSymbol(d_SOBOL_DIR, sobol_data::kDirectionNumbers, sizeof(unsigned int) * 512 * 31);
 }
 
 double normal_cdf(double x) {
@@ -127,34 +120,24 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 }
 
 MCResult CudaQOMCE::run() {
-    // CRITICAL BUG FIX: Increase stack limit per thread. 
-    // Default is 1KB or 4KB. We need > 8KB.
-    cudaDeviceSetLimit(cudaLimitStackSize, 12288);
+    // FIX: Default stack is 1KB-4KB. We use 8KB for z/w + bridge stacks.
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
 
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
-
     cudaMalloc(&d_arith, sizeof(double) * M);
     cudaMalloc(&d_geo, sizeof(double) * M);
 
-    // Using 128 threads to increase available resources per block
-    int threads = 128;
+    int threads = 128; // Lower threads per block to allow more stack per SM
     int blocks = (int)((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo);
-    
     cudaDeviceSynchronize();
-    cudaError_t err = cudaGetLastError();
-    if(err != cudaSuccess) {
-        printf("CUDA Kernel Error: %s\n", cudaGetErrorString(err));
-    }
 
     std::vector<double> h_arith(M), h_geo(M);
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_arith);
-    cudaFree(d_geo);
+    cudaFree(d_arith); cudaFree(d_geo);
 
     BiRunStats cv;
     for(long long i=0; i<M; i++) {
@@ -164,21 +147,16 @@ MCResult CudaQOMCE::run() {
 
     double beta = cv.beta();
     if(!std::isfinite(beta)) beta = 0.0;
-
     double geo_exact = analytic_geometric_asian(gpu_params_);
+    
     RunStats stats;
-
     for(long long i=0; i<M; i++) {
         double corrected = h_arith[i] - beta * (h_geo[i] - geo_exact);
         if(!std::isfinite(corrected)) corrected = h_arith[i];
         stats.update(corrected);
     }
 
-    MCResult result;
-    result.price = stats.get_mean() * gpu_params_.discount;
-    result.std_error = stats.get_std_error() * gpu_params_.discount;
-
-    return result;
+    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
 }
 
 } // namespace urop
