@@ -57,8 +57,6 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = sqrt(dt) * z[N - 1];
 }
 
-// --- THE KERNEL ---
-
 __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
@@ -83,7 +81,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
 
     for (int i = 0; i < params.N; i++) {
         logS += drift + params.sigma * w[i];
-        double S = exp(fmin(logS, 60.0)); 
+        double S = exp(fmin(logS, 50.0)); // Cap price to prevent exp(700) -> inf
         sum_arith += S;
         sum_geo += logS;
     }
@@ -141,27 +139,50 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
+    // Safety check: Use BiRunStats but verify beta before applying
     BiRunStats cv;
+    double sum_arith_raw = 0.0;
+    long long valid_paths = 0;
+
     for (long long i = 0; i < M; i++) {
-        if (isfinite(h_arith[i]) && isfinite(h_geo[i])) {
+        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
+            sum_arith_raw += h_arith[i];
+            valid_paths++;
         }
     }
 
-    double beta = cv.beta();
+    // Determine Beta safely
+    double beta = 0.0;
+    try {
+        beta = cv.beta();
+    } catch (...) {
+        beta = 0.0;
+    }
+    
+    // Final NaN guard for Beta
     if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
-    RunStats stats;
+    RunStats final_stats;
+    
     for (long long i = 0; i < M; i++) {
-        double val = h_arith[i] - beta * (h_geo[i] - geo_exact);
-        if (std::isfinite(val)) stats.update(val);
+        double corrected = h_arith[i];
+        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
+            corrected = h_arith[i] - beta * (h_geo[i] - geo_exact);
+        }
+        
+        // If the correction failed (produced NaN), fallback to raw arithmetic
+        if (!std::isfinite(corrected)) {
+            corrected = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
+        }
+        final_stats.update(corrected);
     }
 
     cudaFree(d_arith); 
     cudaFree(d_geo);
 
-    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
+    return {final_stats.get_mean() * gpu_params_.discount, final_stats.get_std_error() * gpu_params_.discount};
 }
 
 } // namespace urop
