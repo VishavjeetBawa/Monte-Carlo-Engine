@@ -59,6 +59,11 @@ void asian_qmc_kernel(
     double arith_avg = sum_arith / params.N;
     double geo_avg = exp(sum_geo/params.N);
 
+    if(isnan(arith_avg))
+    {
+        printf("NaN detected at path %d\n", path);
+    }
+
     arith[path] = fmax(arith_avg-params.K,0.0);
     geo[path] = fmax(geo_avg-params.K,0.0);
 }
