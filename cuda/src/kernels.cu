@@ -48,12 +48,15 @@ void asian_qmc_kernel(
 
     for(int i=0;i<params.N;i++)
     {
-        logS += drift + vol*w[i];
-
         double S = exp(logS);
 
+        if(!isfinite(S))
+        {
+            S = params.K;   // fallback
+        }
+
         sum_arith += S;
-        sum_geo += log(S);
+        sum_geo += logS;
     }
 
     double arith_avg = sum_arith / params.N;

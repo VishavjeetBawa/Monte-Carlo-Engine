@@ -78,6 +78,12 @@ MCResult CudaQOMCE::run()
         gpu_params_,
         d_arith,
         d_geo);
+    
+    cudaError_t err = cudaGetLastError();
+    if(err != cudaSuccess)
+    {
+        printf("CUDA Kernel Error: %s\n", cudaGetErrorString(err));
+    }
 
     cudaDeviceSynchronize();
 

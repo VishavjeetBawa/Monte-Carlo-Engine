@@ -19,8 +19,7 @@ double sobol_sample(unsigned int index, int dim)
             x ^= SOBOL_DIR[dim][b];
     }
 
-    double u = (double)x * 2.3283064365386963e-10;
-
+    double u = ((double)x + 0.5) * 2.3283064365386963e-10;
     // clamp to avoid inverse normal singularities
     u = fmax(u,1e-12);
     u = fmin(u,1.0-1e-12);
