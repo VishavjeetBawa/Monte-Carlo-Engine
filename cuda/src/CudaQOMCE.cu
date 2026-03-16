@@ -6,12 +6,12 @@
 #include <cmath>
 #include <cstdio>
 
-// Single definition of constant memory in this translation unit
+// Define constant memory once in this translation unit
 __constant__ unsigned int d_SOBOL_DIR[512][31];
 
 namespace urop {
 
-// --- Device Functions ---
+// --- Device Utilities (Inlined for performance) ---
 
 __device__ double inverse_normal(double u) {
     const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
@@ -38,7 +38,7 @@ __device__ double inverse_normal(double u) {
 __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = 0.0;
     w[N-1] = sqrt(N * dt) * z[0];
-    int left[512], right[512]; 
+    int left[64], right[64]; // Using smaller stacks as N=512 is the cap
     int top = 0, dim = 1;
     left[top] = 0; right[top] = N-1;
 
@@ -51,7 +51,7 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
         double mean = ((t_r - t_m) * w[l] + (t_m - t_l) * w[r]) / (t_r - t_l);
         double var = fmax((t_m - t_l) * (t_r - t_m) / (t_r - t_l), 0.0);
         w[m] = mean + sqrt(var) * z[dim++];
-        if(top + 2 < 512) {
+        if(top + 2 < 64) {
             top++; left[top] = l; right[top] = m;
             top++; left[top] = m; right[top] = r;
         }
@@ -66,10 +66,11 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    // Use a fixed size to avoid dynamic allocation on stack
+    // Fixed-size local arrays (stored in thread stack)
     double z[512]; 
     double w[512];
 
+    // 1. Sobol Generation
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
@@ -77,12 +78,14 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
             if (g & (1u << b)) x ^= d_SOBOL_DIR[i][b];
         }
         double u = ((double)x + 0.5) * 2.3283064365386963e-10;
-        u = fmax(u, 1e-12); u = fmin(u, 1.0 - 1e-12); // Clamping
+        u = fmax(1e-12, fmin(u, 1.0 - 1e-12));
         z[i] = inverse_normal(u);
     }
 
+    // 2. Brownian Bridge Path
     brownian_bridge(z, w, params.N, params.dt);
 
+    // 3. Asset Path & Payoff
     double logS = log(params.S0);
     double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
     double sum_arith = 0.0, sum_geo = 0.0;
@@ -98,10 +101,10 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     geo[path] = fmax(exp(sum_geo / params.N) - params.K, 0.0);
 }
 
-// --- Host Methods ---
+// --- Host Class Implementation ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
-    // Correctly copy to the symbol defined in this file
+    // Copy Sobol directions to the constant symbol in this file
     cudaMemcpyToSymbol(d_SOBOL_DIR, sobol_data::kDirectionNumbers, sizeof(unsigned int) * 512 * 31);
 }
 
@@ -120,15 +123,17 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 }
 
 MCResult CudaQOMCE::run() {
-    // FIX: Default stack is 1KB-4KB. We use 8KB for z/w + bridge stacks.
-    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
+    // CRITICAL: Increase stack limit to accommodate double z[512] + w[512]
+    // 8KB per array = 16KB total stack minimum required.
+    cudaDeviceSetLimit(cudaLimitStackSize, 20480); 
 
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
     cudaMalloc(&d_arith, sizeof(double) * M);
     cudaMalloc(&d_geo, sizeof(double) * M);
 
-    int threads = 128; // Lower threads per block to allow more stack per SM
+    // Using 128 threads to ensure each thread has enough hardware resources
+    int threads = 128; 
     int blocks = (int)((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo);
