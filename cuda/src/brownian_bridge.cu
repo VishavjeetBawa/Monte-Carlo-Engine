@@ -62,5 +62,8 @@ void brownian_bridge(
 
     // convert bridge path → increments
     for(int i=N-1;i>0;i--)
-        w[i] -= w[i-1];
+        w[i] = w[i] - w[i-1];
+
+    w[0] = sqrt(dt) * z[N-1];
+
 }
