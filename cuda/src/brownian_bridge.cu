@@ -37,7 +37,7 @@ void brownian_bridge(
 
         double mean =
             ((t_r-t_m)*w[l] +
-             (t_m-t_l)*w[r]) /
+           (t_m-t_l)*w[r]) /
             (t_r-t_l);
 
         double var =
@@ -47,13 +47,17 @@ void brownian_bridge(
 
         dim++;
 
-        top++;
-        left[top]=l;
-        right[top]=m;
+        if(top + 2 < 512)
+        {
+            top++;
+            left[top] = l;
+            right[top] = m;
 
-        top++;
-        left[top]=m;
-        right[top]=r;
+            top++;
+            left[top] = m;
+            right[top] = r;
+        }
+
     }
 
     // convert bridge path → increments
