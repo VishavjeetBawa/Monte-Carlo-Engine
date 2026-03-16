@@ -148,16 +148,20 @@ MCResult CudaQOMCE::run() {
         }
     }
 
-    // Fixed compilation error: Just call beta() and check if it's finite.
     double beta = cv.beta();
-    if (!isfinite(beta)) beta = 0.0;
+    if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
     RunStats stats;
     for (long long i = 0; i < M; i++) {
         double val = h_arith[i] - beta * (h_geo[i] - geo_exact);
-        if (isfinite(val)) stats.update(val);
+        if (std::isfinite(val)) stats.update(val);
     }
 
-    cudaFree(d_arith); cudaFree(d_geo);
-    return {stats.get_mean() *
+    cudaFree(d_arith); 
+    cudaFree(d_geo);
+
+    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
+}
+
+} // namespace urop
