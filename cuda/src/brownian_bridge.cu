@@ -8,8 +8,8 @@ void brownian_bridge(
         double dt)
 {
     // terminal time
+    w[0] = 0.0;
     w[N-1] = sqrt(N*dt) * z[0];
-
     int left[512];
     int right[512];
 
