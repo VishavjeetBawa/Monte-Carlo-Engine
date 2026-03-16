@@ -57,6 +57,7 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
             top++; left[top] = m; right[top] = r;
         }
     }
+    // Path to Increments
     for (int i = N - 1; i > 0; i--) w[i] = w[i] - w[i - 1];
     w[0] = sqrt(dt) * z[N - 1];
 }
@@ -67,10 +68,11 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
+    // Thread-local storage
     double z[512];
     double w[512];
 
-    // 1. Sobol Generation (Gray Code)
+    // 1. Sobol Generation
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
@@ -82,16 +84,17 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
         z[i] = inverse_normal(u);
     }
 
+    // 2. Brownian Bridge
     brownian_bridge(z, w, params.N, params.dt);
 
-    // 2. Pricing Logic
+    // 3. Asset Path & Payoff
     double logS = log(params.S0);
     double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
     double sum_arith = 0.0, sum_geo = 0.0;
 
     for (int i = 0; i < params.N; i++) {
         logS += drift + params.sigma * w[i];
-        double S = exp(fmin(logS, 50.0)); // Safeguard against explosion
+        double S = exp(fmin(logS, 50.0)); // Prevent infinity explosion
         sum_arith += S;
         sum_geo += logS;
     }
@@ -104,7 +107,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo) {
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
     cudaError_t err = cudaMemcpyToSymbol(d_SOBOL_DIR, sobol_data::kDirectionNumbers, sizeof(unsigned int) * 512 * 31);
-    if (err != cudaSuccess) printf("CUDA Symbol Error: %s\n", cudaGetErrorString(err));
+    if (err != cudaSuccess) printf("CUDA Symbol Memcpy Failed: %s\n", cudaGetErrorString(err));
 }
 
 double normal_cdf(double x) {
@@ -122,7 +125,7 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 }
 
 MCResult CudaQOMCE::run() {
-    // 1. Stack setup
+    // 1. Set thread stack size to 24KB
     cudaDeviceSetLimit(cudaLimitStackSize, 24576); 
 
     long long M = gpu_params_.M;
@@ -133,40 +136,59 @@ MCResult CudaQOMCE::run() {
     int threads = 128; 
     int blocks = (int)((M + threads - 1) / threads);
 
+    // Launch kernel
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo);
     cudaDeviceSynchronize();
 
-    // 2. Data Retrieval
+    // 2. Fetch results
     std::vector<double> h_arith(M), h_geo(M);
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_arith); cudaFree(d_geo);
+    cudaFree(d_arith); 
+    cudaFree(d_geo);
 
-    // 3. Robust Reduction
+    // 3. Robust Reduction using your RunStats implementation
     BiRunStats cv;
+    long long valid_paths = 0;
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
+            valid_paths++;
         }
     }
 
+    // Safety check for beta calculation
     double beta = 0.0;
-    if (cv.get_count() > 1) {
+    if (valid_paths > 1) {
         beta = cv.beta();
     }
-    if (!std::isfinite(beta)) beta = 1.0; 
+    
+    // If the GPU returns identical paths (zero variance), beta will be NaN.
+    // We catch it here to prevent result poisoning.
+    if (!std::isfinite(beta)) {
+        beta = 0.0; 
+    }
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
     RunStats stats;
     for (long long i = 0; i < M; i++) {
-        double corrected = h_arith[i] - beta * (h_geo[i] - geo_exact);
-        if (std::isfinite(corrected)) stats.update(corrected);
-        else stats.update(h_arith[i]); // Fallback
+        double corrected = h_arith[i];
+        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
+            corrected = h_arith[i] - beta * (h_geo[i] - geo_exact);
+        }
+        
+        if (std::isfinite(corrected)) {
+            stats.update(corrected);
+        }
     }
 
     MCResult result;
     result.price = stats.get_mean() * gpu_params_.discount;
     result.std_error = stats.get_std_error() * gpu_params_.discount;
+    
+    // Debug output: check if Path 0 and Path 1 are different
+    // printf("Path0: %f, Path1: %f, Beta: %f\n", h_arith[0], h_arith[1], beta);
+
     return result;
 }
 
