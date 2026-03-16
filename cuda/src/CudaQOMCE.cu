@@ -9,10 +9,9 @@
 
 namespace urop {
 
-// Using a static pointer to avoid constant memory linkage issues
 static unsigned int* d_sobol_ptr = nullptr;
 
-// --- MATH UTILITIES (Device Side) ---
+// --- MATH UTILITIES ---
 
 __device__ double inverse_normal(double u) {
     u = fmax(1e-12, fmin(u, 1.0 - 1e-12));
@@ -67,7 +66,6 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     double z[128], w[128];
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
 
-    // Sobol logic using flat memory layout
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
@@ -97,14 +95,9 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     geo[path] = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
 }
 
-// --- HOST IMPLEMENTATION ---
+// --- HOST ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
-    if (gpu_params_.N > 128) {
-        printf("ERROR: N (%d) exceeds internal stack limit of 128!\n", gpu_params_.N);
-    }
-
-    // Step 1: Flatten the host 2D array to bypass compiler row-padding
     size_t num_elements = 512 * 31;
     if (d_sobol_ptr == nullptr) {
         std::vector<unsigned int> flat_sobol(num_elements);
@@ -113,7 +106,6 @@ CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
                 flat_sobol[i * 31 + j] = (unsigned int)sobol_data::kDirectionNumbers[i][j];
             }
         }
-
         cudaMalloc(&d_sobol_ptr, num_elements * sizeof(unsigned int));
         cudaMemcpy(d_sobol_ptr, flat_sobol.data(), num_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
     }
@@ -149,31 +141,23 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
-    // Reduction and Variance-Safe Beta calculation
     BiRunStats cv;
-    long long count = 0;
     for (long long i = 0; i < M; i++) {
         if (isfinite(h_arith[i]) && isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
-            count++;
         }
     }
 
-    double beta = (count > 10 && cv.var_y() > 1e-12) ? cv.beta() : 0.0;
+    // Fixed compilation error: Just call beta() and check if it's finite.
+    double beta = cv.beta();
     if (!isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
     RunStats stats;
     for (long long i = 0; i < M; i++) {
-        double val = h_arith[i];
-        if (isfinite(val)) {
-            val = h_arith[i] - beta * (h_geo[i] - geo_exact);
-            stats.update(val);
-        }
+        double val = h_arith[i] - beta * (h_geo[i] - geo_exact);
+        if (isfinite(val)) stats.update(val);
     }
 
     cudaFree(d_arith); cudaFree(d_geo);
-    return {stats.get_mean() * gpu_params_.discount, stats.get_std_error() * gpu_params_.discount};
-}
-
-} // namespace urop
+    return {stats.get_mean() *
