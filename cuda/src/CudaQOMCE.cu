@@ -24,6 +24,42 @@ cudaMemcpyToSymbol(
 
 }
 
+double normal_cdf(double x)
+{
+    return 0.5 * erfc(-x / std::sqrt(2.0));
+}
+
+double analytic_geometric_asian(const urop::GPUParams& p)
+{
+    double sigma_sq = p.sigma * p.sigma;
+
+    double sigma_hat =
+        p.sigma *
+        std::sqrt((p.N + 1.0) * (2.0 * p.N + 1.0) /
+                  (6.0 * p.N * p.N));
+
+    double mu_hat =
+        (p.r - 0.5 * sigma_sq) *
+        (p.N + 1.0) / (2.0 * p.N)
+        + 0.5 * sigma_hat * sigma_hat;
+
+    double T = p.N * p.dt;
+
+    double d1 =
+        (std::log(p.S0 / p.K) +
+        (mu_hat + 0.5 * sigma_hat * sigma_hat) * T)
+        / (sigma_hat * std::sqrt(T));
+
+    double d2 = d1 - sigma_hat * std::sqrt(T);
+
+    double price =
+        std::exp(-p.r * T) *
+        (p.S0 * std::exp(mu_hat * T) * normal_cdf(d1)
+        - p.K * normal_cdf(d2));
+
+    return price;
+}
+
 MCResult CudaQOMCE::run()
 {
 
