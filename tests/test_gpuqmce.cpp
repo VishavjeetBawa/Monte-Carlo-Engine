@@ -28,13 +28,13 @@ int main()
     timer.stop();
 
     // Output Results in your specific format
-    std::cout << "COQMCE Price: " << std::fixed << std::setprecision(6)
+    std::cout << "GPUQOMCE Price: " << std::fixed << std::setprecision(6)
               << result.price << "\n";
     std::cout << "Std Error: " << result.std_error << "\n";
 
     // Benchmark Report
     // Label updated to reflect GPU execution
-    timer.print_report("Concurrent QMC (Sobol + BB + Shift + AV + CV + GPU)",
+    timer.print_report("GPU QMC (CUDA)",
                        params.M_);
 
     return 0;

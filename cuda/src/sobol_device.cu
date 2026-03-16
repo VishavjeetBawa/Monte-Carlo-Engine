@@ -1,8 +1,9 @@
 #include <math.h>
 
 #define MAX_DIM 512
+#define SOBOL_BITS 31
 
-__constant__ unsigned int SOBOL_DIR[MAX_DIM][32];
+__constant__ unsigned int SOBOL_DIR[MAX_DIM][SOBOL_BITS];
 
 __device__
 double sobol_sample(unsigned int index, int dim)
@@ -11,9 +12,18 @@ double sobol_sample(unsigned int index, int dim)
 
     unsigned int x = 0;
 
-    for(int b=0;b<32;b++)
+    #pragma unroll
+    for(int b=0;b<SOBOL_BITS;b++)
+    {
         if(g & (1u << b))
             x ^= SOBOL_DIR[dim][b];
+    }
 
-    return (double)x * 2.3283064365386963e-10;
+    double u = (double)x * 2.3283064365386963e-10;
+
+    // clamp to avoid inverse normal singularities
+    u = fmax(u,1e-12);
+    u = fmin(u,1.0-1e-12);
+
+    return u;
 }

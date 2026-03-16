@@ -12,7 +12,8 @@ namespace urop {
 __global__
 void asian_qmc_kernel(
         GPUParams params,
-        double* results)
+        double* arith,
+        double* geo)
 {
 
     int path =
@@ -24,9 +25,10 @@ void asian_qmc_kernel(
     double z[MAX_STEPS];
     double w[MAX_STEPS];
 
+    // Sobol normals
     for(int i=0;i<params.N;i++)
     {
-        double u = sobol_sample(path+1,i);
+        double u = sobol_sample(path,i);
         z[i] = inverse_normal(u);
     }
 
@@ -41,22 +43,24 @@ void asian_qmc_kernel(
     double vol =
         params.sigma;
 
-    double sum = 0.0;
+    double sum_arith = 0.0;
+    double sum_geo = 0.0;
 
     for(int i=0;i<params.N;i++)
     {
-        logS += drift + vol * w[i];
+        logS += drift + vol*w[i];
 
         double S = exp(logS);
 
-        sum += S;
+        sum_arith += S;
+        sum_geo += log(S);
     }
 
-    double avg = sum / params.N;
+    double arith_avg = sum_arith / params.N;
+    double geo_avg = exp(sum_geo/params.N);
 
-    double payoff = fmax(avg - params.K,0.0);
-
-    results[path] = payoff;
+    arith[path] = fmax(arith_avg-params.K,0.0);
+    geo[path] = fmax(geo_avg-params.K,0.0);
 }
 
 }
