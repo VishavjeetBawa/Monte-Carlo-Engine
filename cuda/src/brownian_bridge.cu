@@ -40,8 +40,8 @@ void brownian_bridge(
            (t_m-t_l)*w[r]) /
             (t_r-t_l);
 
-        double var =
-            (t_m-t_l)*(t_r-t_m)/(t_r-t_l);
+        double var = fmax((t_m-t_l)*(t_r-t_m)/(t_r-t_l), 0.0);
+
 
         w[m] = mean + sqrt(var)*z[dim];
 
