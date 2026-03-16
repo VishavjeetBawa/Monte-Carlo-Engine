@@ -14,7 +14,8 @@ static unsigned int* d_sobol_ptr = nullptr;
 // --- MATH UTILITIES ---
 
 __device__ double inverse_normal(double u) {
-    u = fmax(1e-12, fmin(u, 1.0 - 1e-12));
+    // Tighter clamping to stay away from the singularities at 0 and 1
+    u = fmax(1e-10, fmin(u, 1.0 - 1e-10));
     const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
     const double a4 = 138.357751867269, a5 = -30.6647980661472, a6 = 2.50662827745924;
     const double b1 = -54.4760987982241, b2 = 161.585836858041, b3 = -155.698979859887;
@@ -37,7 +38,7 @@ __device__ double inverse_normal(double u) {
 
 __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
     w[0] = 0.0;
-    w[N - 1] = sqrt((double)N * dt) * z[0];
+    w[N - 1] = sqrt(fmax((double)N * dt, 1e-12)) * z[0];
     int left[128], right[128], top = 0, dim = 1;
     left[top] = 0; right[top] = N - 1;
     while (top >= 0 && dim < N) {
@@ -46,6 +47,7 @@ __device__ void brownian_bridge(double* z, double* w, int N, double dt) {
         int m = (l + r) / 2;
         double t_l = l * dt, t_r = r * dt, t_m = m * dt;
         double mean = ((t_r - t_m) * w[l] + (t_m - t_l) * w[r]) / (t_r - t_l);
+        // CRITICAL: Ensure var is never negative
         double var = fmax((t_m - t_l) * (t_r - t_m) / (t_r - t_l), 1e-14);
         w[m] = mean + sqrt(var) * z[dim++];
         if (top + 1 < 128) {
@@ -80,8 +82,10 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     double sum_arith = 0.0, sum_geo = 0.0;
 
     for (int i = 0; i < params.N; i++) {
-        logS += drift + params.sigma * w[i];
-        double S = exp(fmin(logS, 50.0)); // Cap price to prevent exp(700) -> inf
+        double dW = w[i];
+        if (!isfinite(dW)) dW = 0.0; // Protection against BB failure
+        logS += drift + params.sigma * dW;
+        double S = exp(fmax(fmin(logS, 50.0), -50.0)); 
         sum_arith += S;
         sum_geo += logS;
     }
@@ -89,8 +93,8 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     double a_payoff = (sum_arith / params.N) - params.K;
     double g_payoff = exp(sum_geo / params.N) - params.K;
 
-    arith[path] = isfinite(a_payoff) ? fmax(a_payoff, 0.0) : 0.0;
-    geo[path] = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
+    arith[path] = (isfinite(a_payoff)) ? fmax(a_payoff, 0.0) : 0.0;
+    geo[path] = (isfinite(g_payoff)) ? fmax(g_payoff, 0.0) : 0.0;
 }
 
 // --- HOST ---
@@ -123,7 +127,6 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 
 MCResult CudaQOMCE::run() {
     cudaDeviceSetLimit(cudaLimitStackSize, 32768);
-
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
     cudaMalloc(&d_arith, sizeof(double) * M);
@@ -139,49 +142,36 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
-    // Safety check: Use BiRunStats but verify beta before applying
     BiRunStats cv;
-    double sum_arith_raw = 0.0;
-    long long valid_paths = 0;
-
+    double raw_arith_sum = 0.0;
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
-            sum_arith_raw += h_arith[i];
-            valid_paths++;
+            raw_arith_sum += h_arith[i];
         }
     }
 
-    // Determine Beta safely
     double beta = 0.0;
-    try {
+    // Manual variance check to avoid BiRunStats NaN internal division
+    if (cv.count() > 1) {
         beta = cv.beta();
-    } catch (...) {
-        beta = 0.0;
     }
-    
-    // Final NaN guard for Beta
     if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
     RunStats final_stats;
-    
     for (long long i = 0; i < M; i++) {
-        double corrected = h_arith[i];
+        double val = h_arith[i];
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
-            corrected = h_arith[i] - beta * (h_geo[i] - geo_exact);
+            val = h_arith[i] - beta * (h_geo[i] - geo_exact);
         }
-        
-        // If the correction failed (produced NaN), fallback to raw arithmetic
-        if (!std::isfinite(corrected)) {
-            corrected = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
-        }
-        final_stats.update(corrected);
+        // Fallback to raw if the CV result is still NaN
+        if (!std::isfinite(val)) val = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
+        final_stats.update(val);
     }
 
     cudaFree(d_arith); 
     cudaFree(d_geo);
-
     return {final_stats.get_mean() * gpu_params_.discount, final_stats.get_std_error() * gpu_params_.discount};
 }
 
