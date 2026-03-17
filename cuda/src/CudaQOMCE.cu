@@ -14,7 +14,6 @@ static unsigned int* d_sobol_ptr = nullptr;
 // --- MATH UTILITIES ---
 
 __device__ double inverse_normal(double u) {
-    // Tighter clamping to stay away from the singularities at 0 and 1
     u = fmax(1e-10, fmin(u, 1.0 - 1e-10));
     const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
     const double a4 = 138.357751867269, a5 = -30.6647980661472, a6 = 2.50662827745924;
@@ -36,54 +35,11 @@ __device__ double inverse_normal(double u) {
     return (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q / (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1.0);
 }
 
-__device__ void brownian_bridge(double* z, double* w, int N, double dt) {
-    w[0] = 0.0;
-    w[N - 1] = sqrt(fmax((double)N * dt, 1e-12)) * z[0];
-    int left[128], right[128], top = 0, dim = 1;
-    left[top] = 0; right[top] = N - 1;
-    while (top >= 0 && dim < N) {
-        int l = left[top], r = right[top]; top--;
-        if (r - l <= 1) continue;
-        int m = (l + r) / 2;
-        double t_l = l * dt, t_r = r * dt, t_m = m * dt;
-        double mean = ((t_r - t_m) * w[l] + (t_m - t_l) * w[r]) / (t_r - t_l);
-        // CRITICAL: Ensure var is never negative
-        double var = fmax((t_m - t_l) * (t_r - t_m) / (t_r - t_l), 1e-14);
-        w[m] = mean + sqrt(var) * z[dim++];
-        if (top + 1 < 128) {
-            top++; left[top] = l; right[top] = m;
-            top++; left[top] = m; right[top] = r;
-        }
-    }
-    for (int i = N - 1; i > 0; i--) w[i] = w[i] - w[i - 1];
-    w[0] = sqrt(dt) * z[N - 1];
-}
-
-__global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
-    long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
-    if (path >= params.M) return;
-
-    double z[128];                     // Sobol normals → increments after bridge
-    unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
-
-    // Generate Sobol uniform numbers and transform to normal
-    for (int i = 0; i < params.N; ++i) {
-        unsigned int x = 0;
-        for (int b = 0; b < 31; ++b) {
-            if (g & (1u << b))
-                x ^= sobol_dirs[i * 31 + b];
-        }
-        double u = ((double)x + 0.5) * 2.3283064365386963e-10;   // (x+0.5)/2^32
-        z[i] = inverse_normal(u);
-    }
-
-    const int N = params.N;
-    const double dt = params.dt;
-
-    // ----- Corrected Brownian bridge -----
-    double W[129];                      // N+1 ≤ 129 for N ≤ 128
+// Corrected Brownian bridge – produces standard normal increments
+__device__ void brownian_bridge(double* z, int N, double dt) {
+    double W[129];                // N+1 ≤ 129
     W[0] = 0.0;
-    W[N] = sqrt(N * dt) * z[0];         // Brownian at final time T
+    W[N] = sqrt(N * dt) * z[0];   // Brownian at final time
 
     int left[128], right[128];
     int top = 0;
@@ -106,30 +62,49 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
         left[++top] = m;  right[top] = r;
     }
 
-    // Convert Brownian path to standard normal increments
+    // Convert to standard normal increments
     for (int i = 0; i < N; ++i)
         z[i] = (W[i+1] - W[i]) / sqrt(dt);
+}
 
-    // ----- Path simulation -----
-    double logS = log(params.S0);
-    double drift = (params.r - 0.5 * params.sigma * params.sigma) * dt;
-    double vol = params.sigma * sqrt(dt);
-    double sum_arith = 0.0, sum_geo = 0.0;
+__global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
+    long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    if (path >= params.M) return;
 
-    for (int i = 0; i < N; ++i) {
-        logS += drift + vol * z[i];                // z[i] is now a standard normal increment
-        if (!isfinite(logS)) logS = 0.0;            // safety clamp
-        double S = exp(fmax(fmin(logS, 50.0), -50.0));
-        sum_arith += S;
-        sum_geo   += logS;
+    double z[128];                     // will hold increments after bridge
+    unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
+
+    for (int i = 0; i < params.N; i++) {
+        unsigned int x = 0;
+        for (int b = 0; b < 31; b++) {
+            if (g & (1u << b)) x ^= sobol_dirs[i * 31 + b];
+        }
+        double u = ((double)x + 0.5) * 2.3283064365386963e-10; // (x+0.5)/2^32
+        z[i] = inverse_normal(u);
     }
 
-    double a_payoff = (sum_arith / N) - params.K;
-    double g_payoff = exp(sum_geo / N) - params.K;
+    brownian_bridge(z, params.N, params.dt);
+
+    double logS = log(params.S0);
+    double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
+    double vol = params.sigma * sqrt(params.dt);
+    double sum_arith = 0.0, sum_geo = 0.0;
+
+    for (int i = 0; i < params.N; i++) {
+        logS += drift + vol * z[i];          // z[i] is now a standard normal increment
+        if (!isfinite(logS)) logS = 0.0;
+        double S = exp(fmax(fmin(logS, 50.0), -50.0));
+        sum_arith += S;
+        sum_geo += logS;
+    }
+
+    double a_payoff = (sum_arith / params.N) - params.K;
+    double g_payoff = exp(sum_geo / params.N) - params.K;
 
     arith[path] = isfinite(a_payoff) ? fmax(a_payoff, 0.0) : 0.0;
     geo[path]   = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
 }
+
 // --- HOST ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
@@ -176,17 +151,14 @@ MCResult CudaQOMCE::run() {
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
     BiRunStats cv;
-    double raw_arith_sum = 0.0;
     for (long long i = 0; i < M; i++) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             cv.update(h_arith[i], h_geo[i]);
-            raw_arith_sum += h_arith[i];
         }
     }
 
     double beta = 0.0;
-    // Manual variance check to avoid BiRunStats NaN internal division
-    if (cv.count() > 1) {
+    if (cv.get_count() > 1) {           // <-- FIXED: use get_count()
         beta = cv.beta();
     }
     if (!std::isfinite(beta)) beta = 0.0;
@@ -198,14 +170,14 @@ MCResult CudaQOMCE::run() {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             val = h_arith[i] - beta * (h_geo[i] - geo_exact);
         }
-        // Fallback to raw if the CV result is still NaN
         if (!std::isfinite(val)) val = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
         final_stats.update(val);
     }
 
     cudaFree(d_arith); 
     cudaFree(d_geo);
-    return {final_stats.get_mean() * gpu_params_.discount, final_stats.get_std_error() * gpu_params_.discount};
+    return {final_stats.get_mean() * gpu_params_.discount,
+            final_stats.get_std_error() * gpu_params_.discount};
 }
 
 } // namespace urop
