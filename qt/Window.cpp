@@ -1,17 +1,19 @@
 #include "Window.hpp"
 
 #include <QVBoxLayout>
-#include <QGridLayout>
+#include <QFormLayout>
+#include <QGroupBox>
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
 #include <QComboBox>
+#include <QFont>
 #include <chrono>
 
 #include "OptionParams.hpp"
-#include "MCE.hpp"          // for CrudeMCE
-#include "Payoff.hpp"       // for AsianCallPayoff
-#include "RNG.hpp"          // for MtRand
+#include "MCE.hpp"
+#include "Payoff.hpp"
+#include "RNG.hpp"
 #include "CudaQOMCE.hpp"
 
 using namespace urop;
@@ -19,9 +21,67 @@ using namespace urop;
 Window::Window(QWidget *parent)
     : QWidget(parent)
 {
-    auto *layout = new QVBoxLayout(this);
+    // ----- Apply a style sheet for a modern look -----
+    setStyleSheet(R"(
+        QWidget {
+            background-color: #f5f5f5;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        QGroupBox {
+            font-weight: bold;
+            border: 2px solid #cccccc;
+            border-radius: 8px;
+            margin-top: 1ex;
+            padding-top: 10px;
+            background-color: white;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px 0 5px;
+        }
+        QLineEdit {
+            border: 1px solid #aaa;
+            border-radius: 4px;
+            padding: 4px;
+            background-color: white;
+        }
+        QLineEdit:focus {
+            border-color: #3daee9;
+        }
+        QPushButton {
+            background-color: #3daee9;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 16px;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: #1e7ab9;
+        }
+        QComboBox {
+            border: 1px solid #aaa;
+            border-radius: 4px;
+            padding: 4px;
+            background-color: white;
+        }
+        QLabel#outputLabel {
+            font-size: 12pt;
+            font-weight: bold;
+            color: #333;
+        }
+    )");
 
-    auto *grid = new QGridLayout();
+    auto *mainLayout = new QVBoxLayout(this);
+    mainLayout->setSpacing(15);
+    mainLayout->setContentsMargins(20, 20, 20, 20);
+
+    // ----- Input Parameters Group -----
+    auto *inputGroup = new QGroupBox("Input Parameters");
+    auto *formLayout = new QFormLayout(inputGroup);
+    formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    formLayout->setLabelAlignment(Qt::AlignRight);
 
     s0Box = new QLineEdit("100");
     kBox = new QLineEdit("100");
@@ -31,37 +91,48 @@ Window::Window(QWidget *parent)
     nBox = new QLineEdit("100");
     mBox = new QLineEdit("100000");
 
-    grid->addWidget(new QLabel("S0"), 0, 0);
-    grid->addWidget(s0Box, 0, 1);
-    grid->addWidget(new QLabel("K"), 1, 0);
-    grid->addWidget(kBox, 1, 1);
-    grid->addWidget(new QLabel("T"), 2, 0);
-    grid->addWidget(tBox, 2, 1);
-    grid->addWidget(new QLabel("r"), 3, 0);
-    grid->addWidget(rBox, 3, 1);
-    grid->addWidget(new QLabel("sigma"), 4, 0);
-    grid->addWidget(sigmaBox, 4, 1);
-    grid->addWidget(new QLabel("N"), 5, 0);
-    grid->addWidget(nBox, 5, 1);
-    grid->addWidget(new QLabel("M"), 6, 0);
-    grid->addWidget(mBox, 6, 1);
+    formLayout->addRow("S0:", s0Box);
+    formLayout->addRow("K:", kBox);
+    formLayout->addRow("T (years):", tBox);
+    formLayout->addRow("r:", rBox);
+    formLayout->addRow("σ:", sigmaBox);
+    formLayout->addRow("N (steps):", nBox);
+    formLayout->addRow("M (paths):", mBox);
 
-    layout->addLayout(grid);
+    mainLayout->addWidget(inputGroup);
 
+    // ----- Engine Selection -----
     engineBox = new QComboBox();
     engineBox->addItem("CPU Crude MC");
     engineBox->addItem("GPU QMC (CUDA)");
-    layout->addWidget(engineBox);
+    mainLayout->addWidget(engineBox);
 
+    // ----- Run Button -----
     runButton = new QPushButton("Run Engine");
-    layout->addWidget(runButton);
+    runButton->setCursor(Qt::PointingHandCursor);
+    mainLayout->addWidget(runButton);
+
+    // ----- Output Group -----
+    auto *outputGroup = new QGroupBox("Results");
+    auto *outputLayout = new QVBoxLayout(outputGroup);
 
     priceLabel = new QLabel("Price: ");
     stderrLabel = new QLabel("StdErr: ");
     timeLabel = new QLabel("Time: ");
-    layout->addWidget(priceLabel);
-    layout->addWidget(stderrLabel);
-    layout->addWidget(timeLabel);
+
+    // Give these labels an object name for styling
+    priceLabel->setObjectName("outputLabel");
+    stderrLabel->setObjectName("outputLabel");
+    timeLabel->setObjectName("outputLabel");
+
+    outputLayout->addWidget(priceLabel);
+    outputLayout->addWidget(stderrLabel);
+    outputLayout->addWidget(timeLabel);
+
+    mainLayout->addWidget(outputGroup);
+
+    // Stretch to push everything up
+    mainLayout->addStretch();
 
     connect(runButton, &QPushButton::clicked, this, &Window::runEngine);
 }
