@@ -11,7 +11,7 @@ namespace urop {
 
 static unsigned int* d_sobol_ptr = nullptr;
 
-// --- Per‑path digital shift (deterministic) ---
+// --- Per‑path digital shift (deterministic, can be replaced with curand) ---
 __device__ unsigned int get_shift(long long path) {
     return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
 }
@@ -79,17 +79,17 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     if (pair >= params.M) return;          // params.M is now number of pairs
 
     double z[128];
-    // Sobol index for the first path of the pair
-    unsigned int idx = (unsigned int)(2 * pair) + 1;   // paths: 2*pair and 2*pair+1
-    unsigned int g = idx ^ (idx >> 1);
-    unsigned int shift = get_shift(2 * pair);          // shift for first path
+    // Sobol index for the first path of the pair (1‑based)
+    unsigned int idx = (unsigned int)(2 * pair) + 1;
+    unsigned int g = idx ^ (idx >> 1);      // Gray code
+    unsigned int shift = get_shift(2 * pair);
 
     // Generate normals for the first path
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
             if (g & (1u << b))
-                x ^= sobol_dirs[i * 31 + b];
+                x ^= sobol_dirs[i * 31 + b];   // direction numbers are already shifted
         }
         x ^= shift;
         double u = ((double)x + 0.5) * 2.3283064365386963e-10;
@@ -145,7 +145,9 @@ CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
         std::vector<unsigned int> flat_sobol(num_elements);
         for (int i = 0; i < 512; i++) {
             for (int j = 0; j < 31; j++) {
-                flat_sobol[i * 31 + j] = (unsigned int)sobol_data::kDirectionNumbers[i][j];
+                // Apply the shift that the CPU Sobol does: v << (31 - j)
+                unsigned int v = (unsigned int)sobol_data::kDirectionNumbers[i][j];
+                flat_sobol[i * 31 + j] = v << (31 - j);
             }
         }
         cudaMalloc(&d_sobol_ptr, num_elements * sizeof(unsigned int));
@@ -168,8 +170,7 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 
 MCResult CudaQOMCE::run() {
     cudaDeviceSetLimit(cudaLimitStackSize, 32768);
-    // M is now number of pairs (total original paths = 2 * M)
-    long long pairs = gpu_params_.M;   // assume M is number of pairs
+    long long pairs = gpu_params_.M;   // M is number of pairs
     double *d_arith, *d_geo;
 
     cudaMalloc(&d_arith, sizeof(double) * pairs);
