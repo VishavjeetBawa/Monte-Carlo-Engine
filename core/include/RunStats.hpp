@@ -28,7 +28,7 @@ public:
     void update(double x , double y);
     double get_mean_x() const { return mean_x_; }
     double get_mean_y() const { return mean_y_; }
-
+    long long get_count () { return count_; }
     double beta() const{ return covariance()/variance_y(); }
 
 private:
