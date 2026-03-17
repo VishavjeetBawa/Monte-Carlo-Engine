@@ -14,8 +14,6 @@ static unsigned int* d_sobol_ptr = nullptr;
 
 // --- Random shift per path (device function) ---
 __device__ unsigned int get_shift(long long path) {
-    // Simple deterministic shift based on path index
-    // In production, use a proper random generator per path
     return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
 }
 
@@ -137,13 +135,14 @@ CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
 
 double normal_cdf(double x) { return 0.5 * erfc(-x * 0.70710678118); }
 
+// Undiscounted geometric Asian exact price
 double analytic_geometric_asian(const urop::GPUParams& p) {
     double T = p.N * p.dt;
     double sig_hat = p.sigma * std::sqrt((p.N + 1.0) * (2.0 * p.N + 1.0) / (6.0 * p.N * p.N));
     double mu_hat = (p.r - 0.5 * p.sigma * p.sigma) * (p.N + 1.0) / (2.0 * p.N) + 0.5 * sig_hat * sig_hat;
     double d1 = (std::log(p.S0 / p.K) + (mu_hat + 0.5 * sig_hat * sig_hat) * T) / (sig_hat * std::sqrt(T));
     double d2 = d1 - sig_hat * std::sqrt(T);
-    double price = std::exp(-p.r * T) * (p.S0 * std::exp(mu_hat * T) * normal_cdf(d1) - p.K * normal_cdf(d2));
+    double price = p.S0 * std::exp(mu_hat * T) * normal_cdf(d1) - p.K * normal_cdf(d2); // undiscounted
     return isfinite(price) ? price : 0.0;
 }
 
@@ -212,8 +211,8 @@ MCResult CudaQOMCE::run() {
         if (!std::isfinite(beta)) beta = 0.0;
     }
 
-    double geo_exact = analytic_geometric_asian(gpu_params_);
-    printf("geo_exact = %f\n", geo_exact);   // debug
+    double geo_exact = analytic_geometric_asian(gpu_params_); // undiscounted
+    printf("geo_exact (undiscounted) = %f\n", geo_exact);
 
     RunStats final_stats;
     for (long long i = 0; i < M; ++i) {
