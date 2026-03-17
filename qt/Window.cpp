@@ -1,90 +1,128 @@
 #include "Window.hpp"
-
+#include <QApplication> 
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
 #include <QComboBox>
-#include <QFont>
+#include <QFontDatabase>
+#include <QGraphicsDropShadowEffect>
 #include <chrono>
+#include <memory>
 
 #include "OptionParams.hpp"
 #include "MCE.hpp"
 #include "Payoff.hpp"
 #include "RNG.hpp"
 #include "CudaQOMCE.hpp"
+#include "GAsianPricer.hpp"
 
 using namespace urop;
 
 Window::Window(QWidget *parent)
     : QWidget(parent)
 {
-    // ----- Apply a style sheet for a modern look -----
+    // ----- Load a modern font -----
+    QFontDatabase::addApplicationFont(":/fonts/Roboto-Regular.ttf"); // optional, fallback to system
+    QFont defaultFont("Segoe UI", 10);
+    if (QFontDatabase::families().contains("Roboto"))
+        defaultFont.setFamily("Roboto");
+    qApp->setFont(defaultFont);
+
+    // ----- Global stylesheet (web‑inspired) -----
     setStyleSheet(R"(
         QWidget {
-            background-color: #f5f5f5;
-            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f8f9fc;
         }
         QGroupBox {
-            font-weight: bold;
-            border: 2px solid #cccccc;
-            border-radius: 8px;
-            margin-top: 1ex;
-            padding-top: 10px;
+            font-weight: 500;
+            border: 1px solid #e0e5ec;
+            border-radius: 12px;
+            margin-top: 1.2em;
+            padding-top: 15px;
             background-color: white;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px 0 5px;
+            left: 20px;
+            padding: 0 8px 0 8px;
+            color: #2c3e50;
+            font-size: 14px;
         }
-        QLineEdit {
-            border: 1px solid #aaa;
-            border-radius: 4px;
-            padding: 4px;
+        QLineEdit, QComboBox {
+            border: 1px solid #d0d9e8;
+            border-radius: 8px;
+            padding: 8px 12px;
             background-color: white;
-            color: black;                 /* <-- added to make text visible */
+            color: #1e2b3a;
+            selection-background-color: #3f8cff;
+            font-size: 13px;
         }
-        QLineEdit:focus {
-            border-color: #3daee9;
+        QLineEdit:focus, QComboBox:focus {
+            border-color: #3f8cff;
+            outline: none;
         }
         QPushButton {
-            background-color: #3daee9;
+            background-color: #3f8cff;
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-weight: bold;
+            border-radius: 10px;
+            padding: 12px 24px;
+            font-weight: 600;
+            font-size: 15px;
         }
         QPushButton:hover {
-            background-color: #1e7ab9;
+            background-color: #2b6ed9;
         }
-        QComboBox {
-            border: 1px solid #aaa;
-            border-radius: 4px;
-            padding: 4px;
-            background-color: white;
-            color: black;                 /* ensure combo box text is visible */
+        QPushButton:pressed {
+            background-color: #1a4faa;
+        }
+        QLabel {
+            color: #2c3e50;
+            font-size: 13px;
         }
         QLabel#outputLabel {
-            font-size: 12pt;
-            font-weight: bold;
-            color: #333;
+            font-size: 15px;
+            font-weight: 600;
+            color: #1e2b3a;
+            background-color: #f0f4fa;
+            padding: 8px 12px;
+            border-radius: 8px;
+            margin: 2px 0;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 24px;
+        }
+        QComboBox::down-arrow {
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid #5a6b7c;
+            margin-right: 8px;
         }
     )");
 
+    // ----- Main layout with margins and spacing -----
     auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(15);
-    mainLayout->setContentsMargins(20, 20, 20, 20);
+    mainLayout->setSpacing(20);
+    mainLayout->setContentsMargins(30, 30, 30, 30);
 
-    // ----- Input Parameters Group -----
-    auto *inputGroup = new QGroupBox("Input Parameters");
-    auto *formLayout = new QFormLayout(inputGroup);
-    formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    formLayout->setLabelAlignment(Qt::AlignRight);
+    // ----- Header (optional) -----
+    QLabel *titleLabel = new QLabel("⚡ Monte Carlo Option Pricer");
+    titleLabel->setStyleSheet("font-size: 24px; font-weight: 600; color: #1e2b3a; padding: 10px 0;");
+    mainLayout->addWidget(titleLabel);
 
+    // ----- Input Parameters Group (two‑column layout) -----
+    auto *inputGroup = new QGroupBox("Parameters");
+    auto *inputGrid = new QGridLayout(inputGroup);
+    inputGrid->setHorizontalSpacing(20);
+    inputGrid->setVerticalSpacing(15);
+
+    // Create input fields
     s0Box = new QLineEdit("100");
     kBox = new QLineEdit("100");
     tBox = new QLineEdit("1");
@@ -93,30 +131,58 @@ Window::Window(QWidget *parent)
     nBox = new QLineEdit("100");
     mBox = new QLineEdit("100000");
 
-    formLayout->addRow("S0:", s0Box);
-    formLayout->addRow("K:", kBox);
-    formLayout->addRow("T (years):", tBox);
-    formLayout->addRow("r:", rBox);
-    formLayout->addRow("σ:", sigmaBox);
-    formLayout->addRow("N (steps):", nBox);
-    formLayout->addRow("M (paths):", mBox);
+    // First column
+    inputGrid->addWidget(new QLabel("Spot Price (S₀)"), 0, 0);
+    inputGrid->addWidget(s0Box, 0, 1);
+    inputGrid->addWidget(new QLabel("Strike (K)"), 1, 0);
+    inputGrid->addWidget(kBox, 1, 1);
+    inputGrid->addWidget(new QLabel("Maturity (T, years)"), 2, 0);
+    inputGrid->addWidget(tBox, 2, 1);
+    inputGrid->addWidget(new QLabel("Risk‑free Rate (r)"), 3, 0);
+    inputGrid->addWidget(rBox, 3, 1);
+
+    // Second column
+    inputGrid->addWidget(new QLabel("Volatility (σ)"), 0, 2);
+    inputGrid->addWidget(sigmaBox, 0, 3);
+    inputGrid->addWidget(new QLabel("Time Steps (N)"), 1, 2);
+    inputGrid->addWidget(nBox, 1, 3);
+    inputGrid->addWidget(new QLabel("Paths (M)"), 2, 2);
+    inputGrid->addWidget(mBox, 2, 3);
+
+    // Column stretch
+    inputGrid->setColumnStretch(0, 1);
+    inputGrid->setColumnStretch(1, 2);
+    inputGrid->setColumnStretch(2, 1);
+    inputGrid->setColumnStretch(3, 2);
 
     mainLayout->addWidget(inputGroup);
 
-    // ----- Engine Selection -----
+    // ----- Engine Selection (styled combo) -----
     engineBox = new QComboBox();
     engineBox->addItem("CPU Crude MC");
+    engineBox->addItem("CPU Concurrent QMC");
     engineBox->addItem("GPU QMC (CUDA)");
+    engineBox->setMinimumHeight(40);
     mainLayout->addWidget(engineBox);
 
-    // ----- Run Button -----
-    runButton = new QPushButton("Run Engine");
+    // ----- Run Button (with shadow) -----
+    runButton = new QPushButton("Run Simulation");
     runButton->setCursor(Qt::PointingHandCursor);
+    runButton->setMinimumHeight(50);
+
+    // Add a drop shadow to the button
+    auto *shadow = new QGraphicsDropShadowEffect();
+    shadow->setBlurRadius(15);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 50));
+    runButton->setGraphicsEffect(shadow);
+
     mainLayout->addWidget(runButton);
 
-    // ----- Output Group -----
+    // ----- Results Group (cards style) -----
     auto *outputGroup = new QGroupBox("Results");
     auto *outputLayout = new QVBoxLayout(outputGroup);
+    outputLayout->setSpacing(8);
 
     priceLabel = new QLabel("Price: ");
     stderrLabel = new QLabel("StdErr: ");
@@ -131,6 +197,8 @@ Window::Window(QWidget *parent)
     outputLayout->addWidget(timeLabel);
 
     mainLayout->addWidget(outputGroup);
+
+    // Add stretch to keep everything compact at the top
     mainLayout->addStretch();
 
     connect(runButton, &QPushButton::clicked, this, &Window::runEngine);
@@ -151,18 +219,40 @@ void Window::runEngine()
     auto start = std::chrono::high_resolution_clock::now();
 
     MCResult result;
+    QString engine = engineBox->currentText();
 
-    if (engineBox->currentText() == "GPU QMC (CUDA)")
-    {
-        CudaQOMCE engine(params);
-        result = engine.run();
-    }
-    else // CPU Crude MC
-    {
-        auto payoff = std::make_unique<AsianCallPayoff>(K);
-        auto rng = std::make_unique<MtRand>();
-        CrudeMCE engine(params, std::move(payoff), std::move(rng));
-        result = engine.run();
+    try {
+        if (engine == "GPU QMC (CUDA)")
+        {
+            CudaQOMCE engine(params);
+            result = engine.run();
+        }
+        else if (engine == "CPU Concurrent QMC")
+        {
+            auto arith_payoff = std::make_unique<AsianCallPayoff>(K);
+            auto geo_payoff   = std::make_unique<GeometricAsianPayoff>(K);
+            auto rng = std::make_unique<Sobol>(N, T);
+            geo_pricer exact_calc(params);
+            double geo_exact = exact_calc.price();
+            COQMCE engine(params,
+                          std::move(arith_payoff),
+                          std::move(geo_payoff),
+                          std::move(rng),
+                          geo_exact);
+            result = engine.run();
+        }
+        else // CPU Crude MC
+        {
+            auto payoff = std::make_unique<AsianCallPayoff>(K);
+            auto rng = std::make_unique<MtRand>();
+            CrudeMCE engine(params, std::move(payoff), std::move(rng));
+            result = engine.run();
+        }
+    } catch (const std::exception &e) {
+        priceLabel->setText("Error: " + QString(e.what()));
+        stderrLabel->setText("StdErr: --");
+        timeLabel->setText("Time: --");
+        return;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
