@@ -6,12 +6,18 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <random>
 
 namespace urop {
 
 static unsigned int* d_sobol_ptr = nullptr;
 
-// --- MATH UTILITIES ---
+// --- Random shift per path (device function) ---
+__device__ unsigned int get_shift(long long path) {
+    // Simple deterministic shift based on path index
+    // In production, use a proper random generator per path
+    return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
+}
 
 __device__ double inverse_normal(double u) {
     u = fmax(1e-10, fmin(u, 1.0 - 1e-10));
@@ -35,7 +41,6 @@ __device__ double inverse_normal(double u) {
     return (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q / (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1.0);
 }
 
-// Corrected Brownian bridge – produces standard normal increments
 __device__ void brownian_bridge(double* z, int N, double dt) {
     double W[129];                // N+1 ≤ 129
     W[0] = 0.0;
@@ -56,31 +61,40 @@ __device__ void brownian_bridge(double* z, int N, double dt) {
         double tl = l * dt, tr = r * dt, tm = m * dt;
         double mean = ((tr - tm) * W[l] + (tm - tl) * W[r]) / (tr - tl);
         double var  = (tm - tl) * (tr - tm) / (tr - tl);
-        W[m] = mean + sqrt(var) * z[dim++];
+        if (var < 0.0) var = 0.0;
+        W[m] = mean + sqrt(var) * z[dim];
+        if (!isfinite(W[m])) W[m] = 0.0;
+        dim++;
 
         left[++top] = l;  right[top] = m;
         left[++top] = m;  right[top] = r;
     }
 
-    // Convert to standard normal increments
-    for (int i = 0; i < N; ++i)
-        z[i] = (W[i+1] - W[i]) / sqrt(dt);
+    for (int i = 0; i < N; ++i) {
+        double inc = (W[i+1] - W[i]) / sqrt(dt);
+        z[i] = isfinite(inc) ? inc : 0.0;
+    }
 }
 
 __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    double z[128];                     // will hold increments after bridge
-    unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
+    double z[128];
+    unsigned int idx = (unsigned int)path + 1;          // Sobol index starts at 1
+    unsigned int g = idx ^ (idx >> 1);                  // Gray code
+    unsigned int shift = get_shift(path);               // per‑path digital shift
 
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
-            if (g & (1u << b)) x ^= sobol_dirs[i * 31 + b];
+            if (g & (1u << b))
+                x ^= sobol_dirs[i * 31 + b];
         }
+        x ^= shift;                                      // apply digital shift
         double u = ((double)x + 0.5) * 2.3283064365386963e-10; // (x+0.5)/2^32
         z[i] = inverse_normal(u);
+        if (!isfinite(z[i])) z[i] = 0.0;
     }
 
     brownian_bridge(z, params.N, params.dt);
@@ -91,7 +105,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     double sum_arith = 0.0, sum_geo = 0.0;
 
     for (int i = 0; i < params.N; i++) {
-        logS += drift + vol * z[i];          // z[i] is now a standard normal increment
+        logS += drift + vol * z[i];
         if (!isfinite(logS)) logS = 0.0;
         double S = exp(fmax(fmin(logS, 50.0), -50.0));
         sum_arith += S;
@@ -105,7 +119,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     geo[path]   = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
 }
 
-// --- HOST ---
+// --- Host code ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
     size_t num_elements = 512 * 31;
@@ -138,18 +152,16 @@ MCResult CudaQOMCE::run() {
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
 
-    // Allocate and zero device memory
     cudaMalloc(&d_arith, sizeof(double) * M);
     cudaMalloc(&d_geo, sizeof(double) * M);
     cudaMemset(d_arith, 0, sizeof(double) * M);
     cudaMemset(d_geo, 0, sizeof(double) * M);
 
-    int threads = 64; 
+    int threads = 64;
     int blocks = (int)((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_sobol_ptr);
 
-    // Check for launch errors
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
@@ -170,7 +182,14 @@ MCResult CudaQOMCE::run() {
     cudaFree(d_arith);
     cudaFree(d_geo);
 
-    // Count valid paths
+    // ---- Debug: print first 10 values ----
+    printf("First 10 arith payoffs:\n");
+    for (int i = 0; i < 10 && i < M; ++i)
+        printf("  %d: %f\n", i, h_arith[i]);
+    printf("First 10 geo payoffs:\n");
+    for (int i = 0; i < 10 && i < M; ++i)
+        printf("  %d: %f\n", i, h_geo[i]);
+
     long long valid = 0;
     for (long long i = 0; i < M; ++i) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
@@ -181,7 +200,6 @@ MCResult CudaQOMCE::run() {
         return {0.0, 0.0};
     }
 
-    // Compute control variate beta
     BiRunStats cv;
     for (long long i = 0; i < M; ++i) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
@@ -195,7 +213,7 @@ MCResult CudaQOMCE::run() {
     }
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
-    if (!std::isfinite(geo_exact)) geo_exact = 0.0;
+    printf("geo_exact = %f\n", geo_exact);   // debug
 
     RunStats final_stats;
     for (long long i = 0; i < M; ++i) {
