@@ -6,9 +6,9 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QComboBox>
+#include <chrono>
 
 #include "OptionParams.hpp"
-#include "Timer.hpp"
 #include "MCE.hpp"          // for CrudeMCE
 #include "Payoff.hpp"       // for AsianCallPayoff
 #include "RNG.hpp"          // for MtRand
@@ -78,8 +78,7 @@ void Window::runEngine()
 
     AOP params(S0, K, T, r, sigma, N, M);
 
-    Timer timer;
-    timer.start();
+    auto start = std::chrono::high_resolution_clock::now();
 
     MCResult result;
 
@@ -96,7 +95,8 @@ void Window::runEngine()
         result = engine.run();
     }
 
-    double elapsed = timer.elapsed();
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(end - start).count();
 
     priceLabel->setText("Price: " + QString::number(result.price, 'f', 6));
     stderrLabel->setText("StdErr: " + QString::number(result.std_error, 'f', 6));
