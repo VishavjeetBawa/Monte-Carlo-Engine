@@ -1,255 +1,264 @@
+#include "Window.hpp"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLineEdit>
+#include <QLabel>
+#include <QPushButton>
+#include <QComboBox>
+#include <QFontDatabase>
+#include <QGraphicsDropShadowEffect>
+#include <chrono>
+#include <memory>
+
+#include "OptionParams.hpp"
+#include "MCE.hpp"
+#include "Payoff.hpp"
+#include "RNG.hpp"
 #include "CudaQOMCE.hpp"
-#include "joe_kuo_sobol_data.hpp"
-#include "RunStats.hpp"
-#include <cuda_runtime.h>
-#include <vector>
-#include <cmath>
-#include <cstdio>
-#include <algorithm>
+#include "GAsianPricer.hpp"
 
-namespace urop {
+using namespace urop;
 
-static unsigned int* d_sobol_ptr = nullptr;
+Window::Window(QWidget *parent)
+    : QWidget(parent)
+{
+    // ----- Load a modern font -----
+    QFontDatabase::addApplicationFont(":/fonts/Roboto-Regular.ttf"); // optional, fallback to system
+    QFont defaultFont("Segoe UI", 10);
+    if (QFontDatabase::families().contains("Roboto"))
+        defaultFont.setFamily("Roboto");
+    qApp->setFont(defaultFont);
 
-// --- Per‑path digital shift (deterministic) ---
-__device__ unsigned int get_shift(long long path) {
-    return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
-}
-
-__device__ double inverse_normal(double u) {
-    u = fmax(1e-10, fmin(u, 1.0 - 1e-10));
-    const double a1 = -39.6968302866538, a2 = 220.946098424521, a3 = -275.928510446969;
-    const double a4 = 138.357751867269, a5 = -30.6647980661472, a6 = 2.50662827745924;
-    const double b1 = -54.4760987982241, b2 = 161.585836858041, b3 = -155.698979859887;
-    const double b4 = 66.8013118877197, b5 = -13.2806815528857;
-    const double c1 = -0.00778489400243029, c2 = -0.322396458041136, c3 = -2.40075827716184;
-    const double c4 = -2.54973253934373, c5 = 4.37466414146497, c6 = 2.93816398269878;
-    const double d1 = 0.00778469570904146, d2 = 0.32246712907004, d3 = 2.445134137143, d4 = 3.75440866190742;
-    double q, r;
-    if (u < 0.02425) {
-        q = sqrt(-2.0 * log(u));
-        return (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) / ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0);
-    }
-    if (u > 0.97575) {
-        q = sqrt(-2.0 * log(1.0 - u));
-        return -(((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) / ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0);
-    }
-    q = u - 0.5; r = q * q;
-    return (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q / (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1.0);
-}
-
-__device__ void brownian_bridge(double* z, int N, double dt) {
-    double W[129];                // N+1 ≤ 129
-    W[0] = 0.0;
-    W[N] = sqrt(N * dt) * z[0];   // Brownian at final time
-
-    int left[128], right[128];
-    int top = 0;
-    left[top] = 0;
-    right[top] = N;
-    int dim = 1;
-
-    while (top >= 0 && dim < N) {
-        int l = left[top], r = right[top];
-        top--;
-        if (r - l <= 1) continue;
-
-        int m = (l + r) / 2;
-        double tl = l * dt, tr = r * dt, tm = m * dt;
-        double mean = ((tr - tm) * W[l] + (tm - tl) * W[r]) / (tr - tl);
-        double var  = (tm - tl) * (tr - tm) / (tr - tl);
-        if (var < 0.0) var = 0.0;
-        W[m] = mean + sqrt(var) * z[dim];
-        if (!isfinite(W[m])) W[m] = 0.0;
-        dim++;
-
-        left[++top] = l;  right[top] = m;
-        left[++top] = m;  right[top] = r;
-    }
-
-    for (int i = 0; i < N; ++i) {
-        double inc = (W[i+1] - W[i]) / sqrt(dt);
-        z[i] = isfinite(inc) ? inc : 0.0;
-    }
-}
-
-// Each thread processes one antithetic pair and stores the averaged payoffs
-__global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
-    long long pair = blockIdx.x * (long long)blockDim.x + threadIdx.x;
-    if (pair >= params.M) return;          // params.M is now number of pairs
-
-    double z[128];
-    // Sobol index for the first path of the pair
-    unsigned int idx = (unsigned int)(2 * pair) + 1;   // paths: 2*pair and 2*pair+1
-    unsigned int g = idx ^ (idx >> 1);
-    unsigned int shift = get_shift(2 * pair);          // shift for first path
-
-    // Generate normals for the first path
-    for (int i = 0; i < params.N; i++) {
-        unsigned int x = 0;
-        for (int b = 0; b < 31; b++) {
-            if (g & (1u << b))
-                x ^= sobol_dirs[i * 31 + b];
+    // ----- Global stylesheet (web‑inspired) -----
+    setStyleSheet(R"(
+        QWidget {
+            background-color: #f8f9fc;
         }
-        x ^= shift;
-        double u = ((double)x + 0.5) * 2.3283064365386963e-10;
-        z[i] = inverse_normal(u);
-        if (!isfinite(z[i])) z[i] = 0.0;
-    }
-    brownian_bridge(z, params.N, params.dt);
-    // Save a copy of the increments for the second (antithetic) path
-    double z_anti[128];
-    for (int i = 0; i < params.N; i++) z_anti[i] = -z[i];
-
-    // Compute payoffs for first path
-    double logS = log(params.S0);
-    double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
-    double vol = params.sigma * sqrt(params.dt);
-    double sum_arith1 = 0.0, sum_geo1 = 0.0;
-    for (int i = 0; i < params.N; i++) {
-        logS += drift + vol * z[i];
-        if (!isfinite(logS)) logS = 0.0;
-        double S = exp(fmax(fmin(logS, 50.0), -50.0));
-        sum_arith1 += S;
-        sum_geo1 += logS;
-    }
-    double a1 = (sum_arith1 / params.N) - params.K;
-    double g1 = exp(sum_geo1 / params.N) - params.K;
-
-    // Compute payoffs for antithetic path
-    logS = log(params.S0);
-    double sum_arith2 = 0.0, sum_geo2 = 0.0;
-    for (int i = 0; i < params.N; i++) {
-        logS += drift + vol * z_anti[i];
-        if (!isfinite(logS)) logS = 0.0;
-        double S = exp(fmax(fmin(logS, 50.0), -50.0));
-        sum_arith2 += S;
-        sum_geo2 += logS;
-    }
-    double a2 = (sum_arith2 / params.N) - params.K;
-    double g2 = exp(sum_geo2 / params.N) - params.K;
-
-    // Average the two antithetic payoffs
-    double a_avg = 0.5 * (fmax(a1, 0.0) + fmax(a2, 0.0));
-    double g_avg = 0.5 * (fmax(g1, 0.0) + fmax(g2, 0.0));
-
-    arith[pair] = isfinite(a_avg) ? a_avg : 0.0;
-    geo[pair]   = isfinite(g_avg) ? g_avg : 0.0;
-}
-
-// --- Host code ---
-
-CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
-    size_t num_elements = 512 * 31;
-    if (d_sobol_ptr == nullptr) {
-        std::vector<unsigned int> flat_sobol(num_elements);
-        for (int i = 0; i < 512; i++) {
-            for (int j = 0; j < 31; j++) {
-                flat_sobol[i * 31 + j] = (unsigned int)sobol_data::kDirectionNumbers[i][j];
-            }
+        QGroupBox {
+            font-weight: 500;
+            border: 1px solid #e0e5ec;
+            border-radius: 12px;
+            margin-top: 1.2em;
+            padding-top: 15px;
+            background-color: white;
         }
-        cudaMalloc(&d_sobol_ptr, num_elements * sizeof(unsigned int));
-        cudaMemcpy(d_sobol_ptr, flat_sobol.data(), num_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
-    }
-}
-
-double normal_cdf(double x) { return 0.5 * erfc(-x * 0.70710678118); }
-
-// Undiscounted geometric Asian exact price
-double analytic_geometric_asian(const urop::GPUParams& p) {
-    double T = p.N * p.dt;
-    double sig_hat = p.sigma * std::sqrt((p.N + 1.0) * (2.0 * p.N + 1.0) / (6.0 * p.N * p.N));
-    double mu_hat = (p.r - 0.5 * p.sigma * p.sigma) * (p.N + 1.0) / (2.0 * p.N) + 0.5 * sig_hat * sig_hat;
-    double d1 = (std::log(p.S0 / p.K) + (mu_hat + 0.5 * sig_hat * sig_hat) * T) / (sig_hat * std::sqrt(T));
-    double d2 = d1 - sig_hat * std::sqrt(T);
-    double price = p.S0 * std::exp(mu_hat * T) * normal_cdf(d1) - p.K * normal_cdf(d2); // undiscounted
-    return isfinite(price) ? price : 0.0;
-}
-
-MCResult CudaQOMCE::run() {
-    cudaDeviceSetLimit(cudaLimitStackSize, 32768);
-    // M is now number of pairs (total original paths = 2 * M)
-    long long pairs = gpu_params_.M;   // assume M is number of pairs
-    double *d_arith, *d_geo;
-
-    cudaMalloc(&d_arith, sizeof(double) * pairs);
-    cudaMalloc(&d_geo, sizeof(double) * pairs);
-    cudaMemset(d_arith, 0, sizeof(double) * pairs);
-    cudaMemset(d_geo, 0, sizeof(double) * pairs);
-
-    int threads = 64;
-    int blocks = (int)((pairs + threads - 1) / threads);
-
-    asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_sobol_ptr);
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
-        return {0.0, 0.0};
-    }
-
-    cudaDeviceSynchronize();
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
-        return {0.0, 0.0};
-    }
-
-    std::vector<double> h_arith(pairs), h_geo(pairs);
-    cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * pairs, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * pairs, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_arith);
-    cudaFree(d_geo);
-
-    // ---- Debug: print first 10 averaged payoffs ----
-    printf("First 10 averaged arith payoffs (per pair):\n");
-    for (int i = 0; i < 10 && i < pairs; ++i)
-        printf("  %d: %f\n", i, h_arith[i]);
-    printf("First 10 averaged geo payoffs:\n");
-    for (int i = 0; i < 10 && i < pairs; ++i)
-        printf("  %d: %f\n", i, h_geo[i]);
-
-    long long valid = 0;
-    for (long long i = 0; i < pairs; ++i) {
-        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
-            ++valid;
-    }
-    if (valid == 0) {
-        printf("Warning: No valid paths generated. Check CUDA kernel.\n");
-        return {0.0, 0.0};
-    }
-
-    BiRunStats cv;
-    for (long long i = 0; i < pairs; ++i) {
-        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
-            cv.update(h_arith[i], h_geo[i]);
-    }
-
-    double beta = 0.0;
-    if (cv.get_count() > 1) {
-        beta = cv.beta();
-        if (!std::isfinite(beta)) beta = 0.0;
-    }
-
-    double geo_exact = analytic_geometric_asian(gpu_params_); // undiscounted
-    printf("geo_exact (undiscounted) = %f\n", geo_exact);
-
-    RunStats final_stats;
-    for (long long i = 0; i < pairs; ++i) {
-        double val = h_arith[i];
-        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
-            val = h_arith[i] - beta * (h_geo[i] - geo_exact);
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 20px;
+            padding: 0 8px 0 8px;
+            color: #2c3e50;
+            font-size: 14px;
         }
-        if (!std::isfinite(val))
-            val = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
-        final_stats.update(val);
-    }
+        QLineEdit, QComboBox {
+            border: 1px solid #d0d9e8;
+            border-radius: 8px;
+            padding: 8px 12px;
+            background-color: white;
+            color: #1e2b3a;
+            selection-background-color: #3f8cff;
+            font-size: 13px;
+        }
+        QLineEdit:focus, QComboBox:focus {
+            border-color: #3f8cff;
+            outline: none;
+        }
+        QPushButton {
+            background-color: #3f8cff;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 24px;
+            font-weight: 600;
+            font-size: 15px;
+        }
+        QPushButton:hover {
+            background-color: #2b6ed9;
+        }
+        QPushButton:pressed {
+            background-color: #1a4faa;
+        }
+        QLabel {
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        QLabel#outputLabel {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1e2b3a;
+            background-color: #f0f4fa;
+            padding: 8px 12px;
+            border-radius: 8px;
+            margin: 2px 0;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 24px;
+        }
+        QComboBox::down-arrow {
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid #5a6b7c;
+            margin-right: 8px;
+        }
+    )");
 
-    return {
-        final_stats.get_mean() * gpu_params_.discount,
-        final_stats.get_std_error() * gpu_params_.discount
-    };
+    // ----- Main layout with margins and spacing -----
+    auto *mainLayout = new QVBoxLayout(this);
+    mainLayout->setSpacing(20);
+    mainLayout->setContentsMargins(30, 30, 30, 30);
+
+    // ----- Header (optional) -----
+    QLabel *titleLabel = new QLabel("⚡ Monte Carlo Option Pricer");
+    titleLabel->setStyleSheet("font-size: 24px; font-weight: 600; color: #1e2b3a; padding: 10px 0;");
+    mainLayout->addWidget(titleLabel);
+
+    // ----- Input Parameters Group (two‑column layout) -----
+    auto *inputGroup = new QGroupBox("Parameters");
+    auto *inputGrid = new QGridLayout(inputGroup);
+    inputGrid->setHorizontalSpacing(20);
+    inputGrid->setVerticalSpacing(15);
+
+    // Create input fields
+    s0Box = new QLineEdit("100");
+    kBox = new QLineEdit("100");
+    tBox = new QLineEdit("1");
+    rBox = new QLineEdit("0.05");
+    sigmaBox = new QLineEdit("0.2");
+    nBox = new QLineEdit("100");
+    mBox = new QLineEdit("100000");
+
+    // First column
+    inputGrid->addWidget(new QLabel("Spot Price (S₀)"), 0, 0);
+    inputGrid->addWidget(s0Box, 0, 1);
+    inputGrid->addWidget(new QLabel("Strike (K)"), 1, 0);
+    inputGrid->addWidget(kBox, 1, 1);
+    inputGrid->addWidget(new QLabel("Maturity (T, years)"), 2, 0);
+    inputGrid->addWidget(tBox, 2, 1);
+    inputGrid->addWidget(new QLabel("Risk‑free Rate (r)"), 3, 0);
+    inputGrid->addWidget(rBox, 3, 1);
+
+    // Second column
+    inputGrid->addWidget(new QLabel("Volatility (σ)"), 0, 2);
+    inputGrid->addWidget(sigmaBox, 0, 3);
+    inputGrid->addWidget(new QLabel("Time Steps (N)"), 1, 2);
+    inputGrid->addWidget(nBox, 1, 3);
+    inputGrid->addWidget(new QLabel("Paths (M)"), 2, 2);
+    inputGrid->addWidget(mBox, 2, 3);
+
+    // Column stretch
+    inputGrid->setColumnStretch(0, 1);
+    inputGrid->setColumnStretch(1, 2);
+    inputGrid->setColumnStretch(2, 1);
+    inputGrid->setColumnStretch(3, 2);
+
+    mainLayout->addWidget(inputGroup);
+
+    // ----- Engine Selection (styled combo) -----
+    engineBox = new QComboBox();
+    engineBox->addItem("CPU Crude MC");
+    engineBox->addItem("CPU Concurrent QMC");
+    engineBox->addItem("GPU QMC (CUDA)");
+    engineBox->setMinimumHeight(40);
+    mainLayout->addWidget(engineBox);
+
+    // ----- Run Button (with shadow) -----
+    runButton = new QPushButton("Run Simulation");
+    runButton->setCursor(Qt::PointingHandCursor);
+    runButton->setMinimumHeight(50);
+
+    // Add a drop shadow to the button
+    auto *shadow = new QGraphicsDropShadowEffect();
+    shadow->setBlurRadius(15);
+    shadow->setOffset(0, 4);
+    shadow->setColor(QColor(0, 0, 0, 50));
+    runButton->setGraphicsEffect(shadow);
+
+    mainLayout->addWidget(runButton);
+
+    // ----- Results Group (cards style) -----
+    auto *outputGroup = new QGroupBox("Results");
+    auto *outputLayout = new QVBoxLayout(outputGroup);
+    outputLayout->setSpacing(8);
+
+    priceLabel = new QLabel("Price: ");
+    stderrLabel = new QLabel("StdErr: ");
+    timeLabel = new QLabel("Time: ");
+
+    priceLabel->setObjectName("outputLabel");
+    stderrLabel->setObjectName("outputLabel");
+    timeLabel->setObjectName("outputLabel");
+
+    outputLayout->addWidget(priceLabel);
+    outputLayout->addWidget(stderrLabel);
+    outputLayout->addWidget(timeLabel);
+
+    mainLayout->addWidget(outputGroup);
+
+    // Add stretch to keep everything compact at the top
+    mainLayout->addStretch();
+
+    connect(runButton, &QPushButton::clicked, this, &Window::runEngine);
 }
 
-} // namespace urop
+void Window::runEngine()
+{
+    double S0 = s0Box->text().toDouble();
+    double K = kBox->text().toDouble();
+    double T = tBox->text().toDouble();
+    double r = rBox->text().toDouble();
+    double sigma = sigmaBox->text().toDouble();
+    int N = nBox->text().toInt();
+    long long M = mBox->text().toLongLong();
+
+    AOP params(S0, K, T, r, sigma, N, M);
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    MCResult result;
+    QString engine = engineBox->currentText();
+
+    try {
+        if (engine == "GPU QMC (CUDA)")
+        {
+            CudaQOMCE engine(params);
+            result = engine.run();
+        }
+        else if (engine == "CPU Concurrent QMC")
+        {
+            auto arith_payoff = std::make_unique<AsianCallPayoff>(K);
+            auto geo_payoff   = std::make_unique<GeometricAsianPayoff>(K);
+            auto rng = std::make_unique<Sobol>(N, T);
+            geo_pricer exact_calc(params);
+            double geo_exact = exact_calc.price();
+            COQMCE engine(params,
+                          std::move(arith_payoff),
+                          std::move(geo_payoff),
+                          std::move(rng),
+                          geo_exact);
+            result = engine.run();
+        }
+        else // CPU Crude MC
+        {
+            auto payoff = std::make_unique<AsianCallPayoff>(K);
+            auto rng = std::make_unique<MtRand>();
+            CrudeMCE engine(params, std::move(payoff), std::move(rng));
+            result = engine.run();
+        }
+    } catch (const std::exception &e) {
+        priceLabel->setText("Error: " + QString(e.what()));
+        stderrLabel->setText("StdErr: --");
+        timeLabel->setText("Time: --");
+        return;
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(end - start).count();
+
+    priceLabel->setText("Price: " + QString::number(result.price, 'f', 6));
+    stderrLabel->setText("StdErr: " + QString::number(result.std_error, 'f', 6));
+    timeLabel->setText("Time: " + QString::number(elapsed, 'f', 4) + " s");
+}
