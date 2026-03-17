@@ -137,47 +137,81 @@ MCResult CudaQOMCE::run() {
     cudaDeviceSetLimit(cudaLimitStackSize, 32768);
     long long M = gpu_params_.M;
     double *d_arith, *d_geo;
+
+    // Allocate and zero device memory
     cudaMalloc(&d_arith, sizeof(double) * M);
     cudaMalloc(&d_geo, sizeof(double) * M);
+    cudaMemset(d_arith, 0, sizeof(double) * M);
+    cudaMemset(d_geo, 0, sizeof(double) * M);
 
     int threads = 64; 
     int blocks = (int)((M + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_sobol_ptr);
+
+    // Check for launch errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+        return {0.0, 0.0};
+    }
+
     cudaDeviceSynchronize();
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
+        return {0.0, 0.0};
+    }
 
     std::vector<double> h_arith(M), h_geo(M);
     cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
 
+    cudaFree(d_arith);
+    cudaFree(d_geo);
+
+    // Count valid paths
+    long long valid = 0;
+    for (long long i = 0; i < M; ++i) {
+        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
+            ++valid;
+    }
+    if (valid == 0) {
+        printf("Warning: No valid paths generated. Check CUDA kernel.\n");
+        return {0.0, 0.0};
+    }
+
+    // Compute control variate beta
     BiRunStats cv;
-    for (long long i = 0; i < M; i++) {
-        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
+    for (long long i = 0; i < M; ++i) {
+        if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
             cv.update(h_arith[i], h_geo[i]);
-        }
     }
 
     double beta = 0.0;
-    if (cv.get_count() > 1) {           // <-- FIXED: use get_count()
+    if (cv.get_count() > 1) {
         beta = cv.beta();
+        if (!std::isfinite(beta)) beta = 0.0;
     }
-    if (!std::isfinite(beta)) beta = 0.0;
 
     double geo_exact = analytic_geometric_asian(gpu_params_);
+    if (!std::isfinite(geo_exact)) geo_exact = 0.0;
+
     RunStats final_stats;
-    for (long long i = 0; i < M; i++) {
+    for (long long i = 0; i < M; ++i) {
         double val = h_arith[i];
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             val = h_arith[i] - beta * (h_geo[i] - geo_exact);
         }
-        if (!std::isfinite(val)) val = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
+        if (!std::isfinite(val))
+            val = std::isfinite(h_arith[i]) ? h_arith[i] : 0.0;
         final_stats.update(val);
     }
 
-    cudaFree(d_arith); 
-    cudaFree(d_geo);
-    return {final_stats.get_mean() * gpu_params_.discount,
-            final_stats.get_std_error() * gpu_params_.discount};
+    return {
+        final_stats.get_mean() * gpu_params_.discount,
+        final_stats.get_std_error() * gpu_params_.discount
+    };
 }
 
 } // namespace urop
