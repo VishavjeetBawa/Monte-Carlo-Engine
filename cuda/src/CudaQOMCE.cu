@@ -11,7 +11,7 @@ namespace urop {
 
 static unsigned int* d_sobol_ptr = nullptr;
 
-// --- Per‑path digital shift (deterministic, but can be replaced with curand) ---
+// --- Per‑path digital shift (deterministic) ---
 __device__ unsigned int get_shift(long long path) {
     return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
 }
@@ -97,7 +97,7 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
         if (!isfinite(z[i])) z[i] = 0.0;
     }
     brownian_bridge(z, params.N, params.dt);
-    // Save a copy of the normals for the second (antithetic) path
+    // Save a copy of the increments for the second (antithetic) path
     double z_anti[128];
     for (int i = 0; i < params.N; i++) z_anti[i] = -z[i];
 
