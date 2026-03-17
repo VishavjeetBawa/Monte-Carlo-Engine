@@ -45,6 +45,7 @@ Window::Window(QWidget *parent)
             border-radius: 4px;
             padding: 4px;
             background-color: white;
+            color: black;                 /* <-- added to make text visible */
         }
         QLineEdit:focus {
             border-color: #3daee9;
@@ -65,6 +66,7 @@ Window::Window(QWidget *parent)
             border-radius: 4px;
             padding: 4px;
             background-color: white;
+            color: black;                 /* ensure combo box text is visible */
         }
         QLabel#outputLabel {
             font-size: 12pt;
@@ -120,7 +122,6 @@ Window::Window(QWidget *parent)
     stderrLabel = new QLabel("StdErr: ");
     timeLabel = new QLabel("Time: ");
 
-    // Give these labels an object name for styling
     priceLabel->setObjectName("outputLabel");
     stderrLabel->setObjectName("outputLabel");
     timeLabel->setObjectName("outputLabel");
@@ -130,8 +131,6 @@ Window::Window(QWidget *parent)
     outputLayout->addWidget(timeLabel);
 
     mainLayout->addWidget(outputGroup);
-
-    // Stretch to push everything up
     mainLayout->addStretch();
 
     connect(runButton, &QPushButton::clicked, this, &Window::runEngine);
