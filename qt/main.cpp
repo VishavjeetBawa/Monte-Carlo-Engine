@@ -1,38 +1,13 @@
+#include <QApplication>
+#include "Window.hpp"
 
-#include <QWidget>
-
-class QLineEdit;
-class QLabel;
-class QPushButton;
-class QComboBox;
-
-class Window : public QWidget
+int main(int argc, char *argv[])
 {
-    Q_OBJECT
+    QApplication app(argc, argv);
 
-public:
-    explicit Window(QWidget *parent = nullptr);
+    Window window;
+    window.setWindowTitle("Monte Carlo Option Pricer");
+    window.show();
 
-private slots:
-    void runEngine();
-
-private:
-
-    QLineEdit* s0Box;
-    QLineEdit* kBox;
-    QLineEdit* tBox;
-    QLineEdit* rBox;
-    QLineEdit* sigmaBox;
-    QLineEdit* nBox;
-    QLineEdit* mBox;
-
-    QComboBox* engineBox;
-
-    QLabel* priceLabel;
-    QLabel* stderrLabel;
-    QLabel* timeLabel;
-
-    QPushButton* runButton;
-};
-
-#include "main.moc"
+    return app.exec();
+}

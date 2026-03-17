@@ -1,23 +1,36 @@
 #pragma once
 
-#include <QMainWindow>
+#include <QWidget>
 
-QT_BEGIN_NAMESPACE
-namespace Ui { class MainWindow; }
-QT_END_NAMESPACE
+class QLineEdit;
+class QLabel;
+class QPushButton;
+class QComboBox;
 
-class MainWindow : public QMainWindow
+class Window : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
+    explicit Window(QWidget *parent = nullptr);
 
 private slots:
-
     void runEngine();
 
 private:
-    Ui::MainWindow *ui;
+    QLineEdit* s0Box;
+    QLineEdit* kBox;
+    QLineEdit* tBox;
+    QLineEdit* rBox;
+    QLineEdit* sigmaBox;
+    QLineEdit* nBox;
+    QLineEdit* mBox;
+
+    QComboBox* engineBox;
+
+    QLabel* priceLabel;
+    QLabel* stderrLabel;
+    QLabel* timeLabel;
+
+    QPushButton* runButton;
 };
