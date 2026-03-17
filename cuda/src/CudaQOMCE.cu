@@ -6,13 +6,12 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
-#include <random>
 
 namespace urop {
 
 static unsigned int* d_sobol_ptr = nullptr;
 
-// --- Random shift per path (device function) ---
+// --- Per‑path digital shift (deterministic, but can be replaced with curand) ---
 __device__ unsigned int get_shift(long long path) {
     return (unsigned int)(path * 0x9e3779b97f4a7c15ULL) ^ 0xbf58476d1ce4e5b9ULL;
 }
@@ -74,47 +73,68 @@ __device__ void brownian_bridge(double* z, int N, double dt) {
     }
 }
 
+// Each thread processes one antithetic pair and stores the averaged payoffs
 __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, unsigned int* sobol_dirs) {
-    long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
-    if (path >= params.M) return;
+    long long pair = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    if (pair >= params.M) return;          // params.M is now number of pairs
 
     double z[128];
-    unsigned int idx = (unsigned int)path + 1;          // Sobol index starts at 1
-    unsigned int g = idx ^ (idx >> 1);                  // Gray code
-    unsigned int shift = get_shift(path);               // per‑path digital shift
+    // Sobol index for the first path of the pair
+    unsigned int idx = (unsigned int)(2 * pair) + 1;   // paths: 2*pair and 2*pair+1
+    unsigned int g = idx ^ (idx >> 1);
+    unsigned int shift = get_shift(2 * pair);          // shift for first path
 
+    // Generate normals for the first path
     for (int i = 0; i < params.N; i++) {
         unsigned int x = 0;
         for (int b = 0; b < 31; b++) {
             if (g & (1u << b))
                 x ^= sobol_dirs[i * 31 + b];
         }
-        x ^= shift;                                      // apply digital shift
-        double u = ((double)x + 0.5) * 2.3283064365386963e-10; // (x+0.5)/2^32
+        x ^= shift;
+        double u = ((double)x + 0.5) * 2.3283064365386963e-10;
         z[i] = inverse_normal(u);
         if (!isfinite(z[i])) z[i] = 0.0;
     }
-
     brownian_bridge(z, params.N, params.dt);
+    // Save a copy of the normals for the second (antithetic) path
+    double z_anti[128];
+    for (int i = 0; i < params.N; i++) z_anti[i] = -z[i];
 
+    // Compute payoffs for first path
     double logS = log(params.S0);
     double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
     double vol = params.sigma * sqrt(params.dt);
-    double sum_arith = 0.0, sum_geo = 0.0;
-
+    double sum_arith1 = 0.0, sum_geo1 = 0.0;
     for (int i = 0; i < params.N; i++) {
         logS += drift + vol * z[i];
         if (!isfinite(logS)) logS = 0.0;
         double S = exp(fmax(fmin(logS, 50.0), -50.0));
-        sum_arith += S;
-        sum_geo += logS;
+        sum_arith1 += S;
+        sum_geo1 += logS;
     }
+    double a1 = (sum_arith1 / params.N) - params.K;
+    double g1 = exp(sum_geo1 / params.N) - params.K;
 
-    double a_payoff = (sum_arith / params.N) - params.K;
-    double g_payoff = exp(sum_geo / params.N) - params.K;
+    // Compute payoffs for antithetic path
+    logS = log(params.S0);
+    double sum_arith2 = 0.0, sum_geo2 = 0.0;
+    for (int i = 0; i < params.N; i++) {
+        logS += drift + vol * z_anti[i];
+        if (!isfinite(logS)) logS = 0.0;
+        double S = exp(fmax(fmin(logS, 50.0), -50.0));
+        sum_arith2 += S;
+        sum_geo2 += logS;
+    }
+    double a2 = (sum_arith2 / params.N) - params.K;
+    double g2 = exp(sum_geo2 / params.N) - params.K;
 
-    arith[path] = isfinite(a_payoff) ? fmax(a_payoff, 0.0) : 0.0;
-    geo[path]   = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
+    // Average the two antithetic payoffs
+    double a_avg = 0.5 * (fmax(a1, 0.0) + fmax(a2, 0.0));
+    double g_avg = 0.5 * (fmax(g1, 0.0) + fmax(g2, 0.0));
+
+    arith[pair] = isfinite(a_avg) ? a_avg : 0.0;
+    geo[pair]   = isfinite(g_avg) ? g_avg : 0.0;
 }
 
 // --- Host code ---
@@ -148,16 +168,17 @@ double analytic_geometric_asian(const urop::GPUParams& p) {
 
 MCResult CudaQOMCE::run() {
     cudaDeviceSetLimit(cudaLimitStackSize, 32768);
-    long long M = gpu_params_.M;
+    // M is now number of pairs (total original paths = 2 * M)
+    long long pairs = gpu_params_.M;   // assume M is number of pairs
     double *d_arith, *d_geo;
 
-    cudaMalloc(&d_arith, sizeof(double) * M);
-    cudaMalloc(&d_geo, sizeof(double) * M);
-    cudaMemset(d_arith, 0, sizeof(double) * M);
-    cudaMemset(d_geo, 0, sizeof(double) * M);
+    cudaMalloc(&d_arith, sizeof(double) * pairs);
+    cudaMalloc(&d_geo, sizeof(double) * pairs);
+    cudaMemset(d_arith, 0, sizeof(double) * pairs);
+    cudaMemset(d_geo, 0, sizeof(double) * pairs);
 
     int threads = 64;
-    int blocks = (int)((M + threads - 1) / threads);
+    int blocks = (int)((pairs + threads - 1) / threads);
 
     asian_qmc_kernel<<<blocks, threads>>>(gpu_params_, d_arith, d_geo, d_sobol_ptr);
 
@@ -174,23 +195,23 @@ MCResult CudaQOMCE::run() {
         return {0.0, 0.0};
     }
 
-    std::vector<double> h_arith(M), h_geo(M);
-    cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * M, cudaMemcpyDeviceToHost);
+    std::vector<double> h_arith(pairs), h_geo(pairs);
+    cudaMemcpy(h_arith.data(), d_arith, sizeof(double) * pairs, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_geo.data(), d_geo, sizeof(double) * pairs, cudaMemcpyDeviceToHost);
 
     cudaFree(d_arith);
     cudaFree(d_geo);
 
-    // ---- Debug: print first 10 values ----
-    printf("First 10 arith payoffs:\n");
-    for (int i = 0; i < 10 && i < M; ++i)
+    // ---- Debug: print first 10 averaged payoffs ----
+    printf("First 10 averaged arith payoffs (per pair):\n");
+    for (int i = 0; i < 10 && i < pairs; ++i)
         printf("  %d: %f\n", i, h_arith[i]);
-    printf("First 10 geo payoffs:\n");
-    for (int i = 0; i < 10 && i < M; ++i)
+    printf("First 10 averaged geo payoffs:\n");
+    for (int i = 0; i < 10 && i < pairs; ++i)
         printf("  %d: %f\n", i, h_geo[i]);
 
     long long valid = 0;
-    for (long long i = 0; i < M; ++i) {
+    for (long long i = 0; i < pairs; ++i) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
             ++valid;
     }
@@ -200,7 +221,7 @@ MCResult CudaQOMCE::run() {
     }
 
     BiRunStats cv;
-    for (long long i = 0; i < M; ++i) {
+    for (long long i = 0; i < pairs; ++i) {
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i]))
             cv.update(h_arith[i], h_geo[i]);
     }
@@ -215,7 +236,7 @@ MCResult CudaQOMCE::run() {
     printf("geo_exact (undiscounted) = %f\n", geo_exact);
 
     RunStats final_stats;
-    for (long long i = 0; i < M; ++i) {
+    for (long long i = 0; i < pairs; ++i) {
         double val = h_arith[i];
         if (std::isfinite(h_arith[i]) && std::isfinite(h_geo[i])) {
             val = h_arith[i] - beta * (h_geo[i] - geo_exact);
