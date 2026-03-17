@@ -63,40 +63,73 @@ __global__ void asian_qmc_kernel(GPUParams params, double* arith, double* geo, u
     long long path = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (path >= params.M) return;
 
-    double z[128], w[128];
+    double z[128];                     // Sobol normals → increments after bridge
     unsigned int g = (unsigned int)path ^ ((unsigned int)path >> 1);
 
-    for (int i = 0; i < params.N; i++) {
+    // Generate Sobol uniform numbers and transform to normal
+    for (int i = 0; i < params.N; ++i) {
         unsigned int x = 0;
-        for (int b = 0; b < 31; b++) {
-            if (g & (1u << b)) x ^= sobol_dirs[i * 31 + b];
+        for (int b = 0; b < 31; ++b) {
+            if (g & (1u << b))
+                x ^= sobol_dirs[i * 31 + b];
         }
-        double u = ((double)x + 0.5) * 2.3283064365386963e-10;
+        double u = ((double)x + 0.5) * 2.3283064365386963e-10;   // (x+0.5)/2^32
         z[i] = inverse_normal(u);
     }
 
-    brownian_bridge(z, w, params.N, params.dt);
+    const int N = params.N;
+    const double dt = params.dt;
 
-    double logS = log(params.S0);
-    double drift = (params.r - 0.5 * params.sigma * params.sigma) * params.dt;
-    double sum_arith = 0.0, sum_geo = 0.0;
+    // ----- Corrected Brownian bridge -----
+    double W[129];                      // N+1 ≤ 129 for N ≤ 128
+    W[0] = 0.0;
+    W[N] = sqrt(N * dt) * z[0];         // Brownian at final time T
 
-    for (int i = 0; i < params.N; i++) {
-        double dW = w[i];
-        if (!isfinite(dW)) dW = 0.0; // Protection against BB failure
-        logS += drift + params.sigma * dW;
-        double S = exp(fmax(fmin(logS, 50.0), -50.0)); 
-        sum_arith += S;
-        sum_geo += logS;
+    int left[128], right[128];
+    int top = 0;
+    left[top] = 0;
+    right[top] = N;
+    int dim = 1;
+
+    while (top >= 0 && dim < N) {
+        int l = left[top], r = right[top];
+        top--;
+        if (r - l <= 1) continue;
+
+        int m = (l + r) / 2;
+        double tl = l * dt, tr = r * dt, tm = m * dt;
+        double mean = ((tr - tm) * W[l] + (tm - tl) * W[r]) / (tr - tl);
+        double var  = (tm - tl) * (tr - tm) / (tr - tl);
+        W[m] = mean + sqrt(var) * z[dim++];
+
+        left[++top] = l;  right[top] = m;
+        left[++top] = m;  right[top] = r;
     }
 
-    double a_payoff = (sum_arith / params.N) - params.K;
-    double g_payoff = exp(sum_geo / params.N) - params.K;
+    // Convert Brownian path to standard normal increments
+    for (int i = 0; i < N; ++i)
+        z[i] = (W[i+1] - W[i]) / sqrt(dt);
 
-    arith[path] = (isfinite(a_payoff)) ? fmax(a_payoff, 0.0) : 0.0;
-    geo[path] = (isfinite(g_payoff)) ? fmax(g_payoff, 0.0) : 0.0;
+    // ----- Path simulation -----
+    double logS = log(params.S0);
+    double drift = (params.r - 0.5 * params.sigma * params.sigma) * dt;
+    double vol = params.sigma * sqrt(dt);
+    double sum_arith = 0.0, sum_geo = 0.0;
+
+    for (int i = 0; i < N; ++i) {
+        logS += drift + vol * z[i];                // z[i] is now a standard normal increment
+        if (!isfinite(logS)) logS = 0.0;            // safety clamp
+        double S = exp(fmax(fmin(logS, 50.0), -50.0));
+        sum_arith += S;
+        sum_geo   += logS;
+    }
+
+    double a_payoff = (sum_arith / N) - params.K;
+    double g_payoff = exp(sum_geo / N) - params.K;
+
+    arith[path] = isfinite(a_payoff) ? fmax(a_payoff, 0.0) : 0.0;
+    geo[path]   = isfinite(g_payoff) ? fmax(g_payoff, 0.0) : 0.0;
 }
-
 // --- HOST ---
 
 CudaQOMCE::CudaQOMCE(const AOP& params) : gpu_params_(params) {
