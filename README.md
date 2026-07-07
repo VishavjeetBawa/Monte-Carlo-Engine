@@ -1,3 +1,5 @@
+A high-performance quantitative derivatives pricing engine for arithmetic Asian options, combining Monte Carlo and Sobol Quasi-Monte Carlo simulation with Brownian Bridge dimension reduction, antithetic variates, geometric control variates, and CUDA GPU acceleration for fast, scalable, and statistically efficient option valuation.
+ 
  ### Build and Run
 
 ``` 
